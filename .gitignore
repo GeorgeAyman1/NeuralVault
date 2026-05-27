@@ -216,3 +216,30 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# CortexDB data artifacts
+data/raw/
+data/processed/
+data/embeddings/
+data/indexes/
+
+# Large vector/index files
+*.npy
+*.npz
+*.bin
+*.idx
+*.mmap
+
+# Benchmark outputs
+benchmarks/results/
+
+# Experiment artifacts
+experiments/output/
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

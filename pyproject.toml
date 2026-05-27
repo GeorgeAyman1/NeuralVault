@@ -1,0 +1,10 @@
+[project]
+name = "NeuralVault"
+version = "0.1.0"
+description = "Semantic memory engine for LLM systems"
+authors = [
+    {name = "George Ayman"}
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
