@@ -52,3 +52,9 @@ class MetadataStore:
 
         with open(load_path, "r", encoding="utf-8") as file:
             self.records = json.load(file)
+
+    def increment_retrieval_count(self, index: int) -> None:
+        record = self.records[index]
+        metadata = record.setdefault("metadata", {})
+
+        metadata["retrieval_count"] = metadata.get("retrieval_count", 0) + 1

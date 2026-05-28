@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from api.schemas.memory import (
     MemoryCreateRequest,
     MemorySearchRequest,
+    MemoryBatchCreateRequest,
 )
 
 from core.memory.service import MemoryService
@@ -53,3 +54,10 @@ def load_memory():
         "status": "loaded",
         "count": memory_service.count()
     }
+
+@router.post("/add-batch")
+def add_memories(request: MemoryBatchCreateRequest):
+    return memory_service.add_memories(
+        texts=request.texts,
+        metadata_list=request.metadata_list,
+    )
