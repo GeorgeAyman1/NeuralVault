@@ -4,6 +4,7 @@ from api.schemas.memory import (
     MemoryCreateRequest,
     MemorySearchRequest,
     MemoryBatchCreateRequest,
+    ConsolidationRequest,
 )
 
 from core.memory.service import MemoryService
@@ -24,7 +25,16 @@ def add_memory(request: MemoryCreateRequest):
 
 @router.post("/search")
 def search_memory(request: MemorySearchRequest):
-    return memory_service.search_memory(
+    search_service = MemoryService(
+        auto_load=True,
+        use_ivf=request.use_ivf,
+        use_hybrid=request.use_hybrid,
+    )
+
+    if request.use_ivf:
+        search_service.build_index()
+
+    return search_service.search_memory(
         query=request.query,
         top_k=request.top_k,
     )
@@ -60,4 +70,10 @@ def add_memories(request: MemoryBatchCreateRequest):
     return memory_service.add_memories(
         texts=request.texts,
         metadata_list=request.metadata_list,
+    )
+
+@router.post("/consolidation/candidates")
+def find_consolidation_candidates(request: ConsolidationRequest):
+    return memory_service.find_consolidation_candidates(
+        similarity_threshold=request.similarity_threshold,
     )

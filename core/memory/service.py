@@ -3,6 +3,8 @@ from core.storage.vector_store import VectorStore
 from core.storage.metadata_store import MetadataStore
 from core.indexing.retrieval import SemanticRetriever
 from core.utils.logging import get_logger
+from core.memory.consolidation import MemoryConsolidator
+from core.ingestion.notebook_loader import NotebookLoader
 
 
 class MemoryService:
@@ -10,12 +12,14 @@ class MemoryService:
     High-level service for adding, saving, loading, and searching semantic memories.
     """
 
-    def __init__(self, auto_load: bool = True, use_ivf: bool = False):
+    def __init__(self, auto_load: bool = True, use_ivf: bool = False, use_hybrid: bool = False,):
         self.encoder = TextEncoder()
         self.vector_store = VectorStore()
         self.metadata_store = MetadataStore()
         self.logger = get_logger(__name__)
         self.logger.info("Initializing MemoryService")
+        self.consolidator = MemoryConsolidator()
+        self.notebook_loader = NotebookLoader()
 
         if auto_load:
             self.load()
@@ -25,6 +29,7 @@ class MemoryService:
             vector_store=self.vector_store,
             metadata_store=self.metadata_store,
             use_ivf=use_ivf,
+            use_hybrid=use_hybrid,
         )
 
     def add_memory(self, text: str, metadata: dict | None = None) -> dict:
@@ -109,3 +114,33 @@ class MemoryService:
         if self.retriever.use_ivf:
             self.logger.info("Building IVF index")
             self.retriever.build_ivf()
+
+    def find_consolidation_candidates(self, similarity_threshold: float = 0.85) -> list[dict]:
+        consolidator = MemoryConsolidator(similarity_threshold=similarity_threshold)
+
+        self.logger.info(
+            "Finding consolidation candidates: threshold=%s",
+            similarity_threshold,
+        )
+
+        return consolidator.find_candidates(
+            vectors=self.vector_store.vectors,
+            records=self.metadata_store.records,
+    )
+
+    def ingest_notebook(self, path: str) -> dict:
+        chunks = self.notebook_loader.load(path)
+
+        texts = [chunk["text"] for chunk in chunks]
+        metadata_list = [chunk["metadata"] for chunk in chunks]
+
+        self.logger.info(
+            "Ingesting notebook: path=%s chunks=%s",
+            path,
+            len(chunks),
+        )
+
+        return self.add_memories(
+            texts=texts,
+            metadata_list=metadata_list,
+    )

@@ -3,6 +3,7 @@ from core.storage.vector_store import VectorStore
 from core.storage.metadata_store import MetadataStore
 from core.indexing.ivf_index import IVFIndex
 from core.memory.ranking import MemoryRanker
+from core.indexing.hybrid_retrieval import HybridRetrieval
 
 
 class SemanticRetriever:
@@ -18,12 +19,15 @@ class SemanticRetriever:
         use_ivf: bool = False,
         n_clusters: int = 8,
         n_probe: int = 2,
+        use_hybrid: bool = False,
     ):
         self.encoder = encoder
         self.vector_store = vector_store
         self.metadata_store = metadata_store
         self.use_ivf = use_ivf
         self.ranker = MemoryRanker()
+        self.use_hybrid = use_hybrid
+        self.hybrid_retrieval = HybridRetrieval()
 
         self.ivf_index = IVFIndex(
             n_clusters=n_clusters,
@@ -73,4 +77,12 @@ class SemanticRetriever:
                 "id": metadata["id"],
             })
 
-        return self.ranker.rank(output)
+        ranked_results = self.ranker.rank(output)
+
+        if self.use_hybrid:
+            return self.hybrid_retrieval.rerank(
+                query=query,
+                semantic_results=ranked_results,
+            )
+
+        return ranked_results
