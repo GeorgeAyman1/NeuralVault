@@ -11,8 +11,9 @@ class VecDB:
         new_db: bool = False,
         db_size: int | None = None,
         block_size: int = 500_000,
-        n_probe: int = 16,
+        n_probe: int = 32,
         min_candidates: int = 0,
+        dim: int = 64,
     ):
         self.database_file_path = Path(database_file_path)
         self.index_file_path = Path(index_file_path) if index_file_path else None
@@ -21,6 +22,7 @@ class VecDB:
         self.block_size = block_size
         self.n_probe = n_probe
         self.min_candidates = min_candidates
+        self.dim = dim
 
         self.vectors = self._load_vectors()
         self.ivf_index = self._load_ivf_index()
@@ -33,19 +35,19 @@ class VecDB:
 
         if self.database_file_path.suffix == ".npy":
             vectors = np.load(self.database_file_path, mmap_mode="r")
+            if self.db_size is not None:
+                vectors = vectors[: self.db_size]
         else:
+            # Raw binary memmap (e.g. .dat) — must specify shape explicitly
             if self.db_size is None:
-                raise ValueError(
-                    "db_size is required when loading raw memmap vector files."
-                )
+                file_bytes = self.database_file_path.stat().st_size
+                self.db_size = file_bytes // (self.dim * 4)
             vectors = np.memmap(
                 self.database_file_path,
                 dtype=np.float32,
                 mode="r",
+                shape=(self.db_size, self.dim),
             )
-
-        if self.db_size is not None:
-            vectors = vectors[: self.db_size]
 
         return vectors
 
@@ -70,6 +72,9 @@ class VecDB:
 
     def retrieve(self, query_vector, top_k: int) -> list[int]:
         query = np.asarray(query_vector, dtype=np.float32).reshape(-1)
+        norm = np.linalg.norm(query)
+        if norm > 0:
+            query = query / norm
 
         if self.ivf_index is not None:
             return self._retrieve_ivf(query, top_k)
@@ -112,7 +117,11 @@ class VecDB:
         # Sort candidate IDs before mmap access — turns random I/O into sequential reads
         sorted_candidates = candidates[np.argsort(candidates)]
 
-        candidate_vecs = self.vectors[sorted_candidates]
+        candidate_vecs = self.vectors[sorted_candidates].astype(np.float32)
+        # Normalize candidates for cosine similarity
+        norms = np.linalg.norm(candidate_vecs, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        candidate_vecs /= norms
         scores = candidate_vecs @ query
 
         k = min(top_k, len(sorted_candidates))
@@ -132,7 +141,11 @@ class VecDB:
 
         for start in range(0, total_vectors, block_size):
             end = min(start + block_size, total_vectors)
-            block = self.vectors[start:end]
+            block = self.vectors[start:end].astype(np.float32)
+            # Normalize each vector for cosine similarity
+            norms = np.linalg.norm(block, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            block /= norms
             scores = block @ query
 
             k = min(top_k, len(scores))

@@ -1,14 +1,21 @@
 """
-Build a compact IVF index for VecDB from a .npy vector database.
+Build a compact IVF index for VecDB from a vector database.
 
 The index format (CSR layout) is stored in a directory:
   centroids.npy          — (n_clusters, dim) float32, unit-normalized
   partition_offsets.npy  — (n_clusters+1,) int64, start/end of each partition
   partition_ids.npy      — (n_total,) int64, all vector IDs concatenated
 
+Supports .npy files and raw binary .dat files (float32, shape N x dim).
+
 Usage:
     python scripts/build_index.py --db-path data/vectors.npy \
         --index-dir data/indexes/my_index
+
+    # Raw binary .dat file (ADB format):
+    python scripts/build_index.py --db-path OpenSubtitles_en_1M_emb_64.dat \
+        --index-dir ivf_1m --dim 64 --db-size 1000000 \
+        --n-clusters 4096 --sample-size 500000
 
     # Large DB recommended settings:
     python scripts/build_index.py --db-path data/vectors.npy \
@@ -30,10 +37,22 @@ def build_index(
     sample_size: int = 500_000,
     block_size: int = 100_000,
     seed: int = 42,
+    dim: int = 64,
+    db_size: int | None = None,
 ) -> None:
     print(f"Loading vectors from {db_path} ...")
-    vectors = np.load(db_path, mmap_mode="r")
-    n, dim = vectors.shape
+    if db_path.suffix in (".npy", ".npz"):
+        vectors = np.load(db_path, mmap_mode="r")
+        if db_size is not None:
+            vectors = vectors[:db_size]
+        n, dim = vectors.shape
+    else:
+        # Raw binary memmap (e.g. .dat) — float32, shape (N, dim)
+        if db_size is None:
+            file_bytes = db_path.stat().st_size
+            db_size = file_bytes // (dim * 4)
+        n = db_size
+        vectors = np.memmap(db_path, dtype="float32", mode="r", shape=(n, dim))
     print(f"  {n:,} vectors  dim={dim}  dtype={vectors.dtype}")
 
     # --- Sample for KMeans training ---
@@ -133,6 +152,8 @@ def main():
     parser.add_argument("--sample-size", type=int, default=500_000)
     parser.add_argument("--block-size", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--dim", type=int, default=64, help="Vector dimension (for raw binary files)")
+    parser.add_argument("--db-size", type=int, default=None, help="Number of vectors to load (for raw binary files)")
     args = parser.parse_args()
 
     build_index(
@@ -142,6 +163,8 @@ def main():
         sample_size=args.sample_size,
         block_size=args.block_size,
         seed=args.seed,
+        dim=args.dim,
+        db_size=args.db_size,
     )
 
 
