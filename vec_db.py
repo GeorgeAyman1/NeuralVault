@@ -81,37 +81,39 @@ class VecDB:
         offsets = self.ivf_index["offsets"]
         ids = self.ivf_index["ids"]
 
-        # Find n_probe nearest centroids by dot product
+        # Score all centroids (single matmul, fast for any n_clusters)
         centroid_scores = centroids @ query
         n_probe = min(self.n_probe, len(centroids))
-        nearest = np.argpartition(centroid_scores, -n_probe)[-n_probe:]
 
-        # Gather candidate IDs from selected partitions (CSR lookup).
-        # Expand n_probe if we haven't hit min_candidates yet.
-        expanded_probe = n_probe
-        parts = [ids[offsets[c]: offsets[c + 1]] for c in nearest]
+        # Gather candidate IDs from the nearest n_probe partitions.
+        # When min_candidates > 0, expand past n_probe until the floor is met.
         if self.min_candidates > 0:
-            candidate_count = sum(len(p) for p in parts)
-            while candidate_count < self.min_candidates and expanded_probe < len(centroids):
-                expanded_probe += 1
-                extra = int(np.argpartition(centroid_scores, -expanded_probe)[-expanded_probe])
-                extra_ids = ids[offsets[extra]: offsets[extra + 1]]
-                parts.append(extra_ids)
-                candidate_count += len(extra_ids)
+            # Sort once; iterate in descending similarity order
+            sorted_clusters = np.argsort(centroid_scores)[::-1]
+            parts: list[np.ndarray] = []
+            candidate_count = 0
+            for rank, c in enumerate(sorted_clusters):
+                if rank >= n_probe and candidate_count >= self.min_candidates:
+                    break
+                part = ids[offsets[c]: offsets[c + 1]]
+                parts.append(part)
+                candidate_count += len(part)
+        else:
+            # argpartition is faster than argsort when we don't need order
+            nearest = np.argpartition(centroid_scores, -n_probe)[-n_probe:]
+            parts = [ids[offsets[c]: offsets[c + 1]] for c in nearest]
 
-        if not parts or all(len(p) == 0 for p in parts):
+        non_empty = [p for p in parts if len(p) > 0]
+        if not non_empty:
             return self._retrieve_brute_force(query, top_k)
 
-        candidates = np.concatenate(parts)
-        if len(candidates) == 0:
-            return self._retrieve_brute_force(query, top_k)
+        candidates = np.concatenate(non_empty)
 
-        # Sort candidate IDs for sequential memmap access (avoids random I/O)
-        sort_order = np.argsort(candidates)
-        sorted_candidates = candidates[sort_order]
+        # Sort candidate IDs before mmap access — turns random I/O into sequential reads
+        sorted_candidates = candidates[np.argsort(candidates)]
 
         candidate_vecs = self.vectors[sorted_candidates]
-        scores = np.dot(candidate_vecs, query)
+        scores = candidate_vecs @ query
 
         k = min(top_k, len(sorted_candidates))
         if len(sorted_candidates) > k:
