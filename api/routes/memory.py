@@ -9,6 +9,8 @@ from api.schemas.memory import (
     PruneRequest,
     SummarizeRequest,
     BuildIndexRequest,
+    IngestPathRequest,
+    IngestDirectoryRequest,
 )
 from core.memory.service import MemoryService
 
@@ -103,3 +105,39 @@ def summarize_memories(request: SummarizeRequest):
         return memory_service.summarize_memories(indices=request.indices)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ------------------------------------------------------------------ #
+# Sprint 2: Document and codebase ingestion                            #
+# ------------------------------------------------------------------ #
+
+@router.post("/ingest/notebook")
+def ingest_notebook(request: IngestPathRequest):
+    try:
+        return memory_service.ingest_notebook(request.path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/ingest/pdf")
+def ingest_pdf(request: IngestPathRequest):
+    try:
+        return memory_service.ingest_pdf(request.path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/ingest/docx")
+def ingest_docx(request: IngestPathRequest):
+    try:
+        return memory_service.ingest_docx(request.path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/ingest/directory")
+def ingest_directory(request: IngestDirectoryRequest):
+    try:
+        return memory_service.ingest_directory(request.path, extensions=request.extensions)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=str(e))

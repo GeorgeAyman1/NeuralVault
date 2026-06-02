@@ -37,3 +37,12 @@ class SummarizeRequest(BaseModel):
 
 class BuildIndexRequest(BaseModel):
     n_clusters: int | None = Field(default=None, ge=16, le=65536)
+
+
+class IngestPathRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+
+
+class IngestDirectoryRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    extensions: list[str] | None = None

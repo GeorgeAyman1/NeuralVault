@@ -7,6 +7,9 @@ from core.memory.consolidation import MemoryConsolidator
 from core.memory.pruning import MemoryPruner
 from core.memory.summarization import MemorySummarizer
 from core.ingestion.notebook_loader import NotebookLoader
+from core.ingestion.pdf_loader import PDFLoader
+from core.ingestion.docx_loader import DOCXLoader
+from core.ingestion.directory_loader import DirectoryLoader
 
 
 class MemoryService:
@@ -22,10 +25,13 @@ class MemoryService:
         self.encoder         = TextEncoder()
         self.vector_store    = VecDBStore()
         self.metadata_store  = MetadataStore()
-        self.consolidator    = MemoryConsolidator()
-        self.pruner          = MemoryPruner()
-        self.summarizer      = MemorySummarizer()
-        self.notebook_loader = NotebookLoader()
+        self.consolidator         = MemoryConsolidator()
+        self.pruner               = MemoryPruner()
+        self.summarizer           = MemorySummarizer()
+        self.notebook_loader      = NotebookLoader()
+        self.pdf_loader           = PDFLoader()
+        self.docx_loader          = DOCXLoader()
+        self.directory_loader     = DirectoryLoader()
 
         if auto_load:
             self.load()
@@ -234,7 +240,33 @@ class MemoryService:
     def ingest_notebook(self, path: str) -> dict:
         chunks = self.notebook_loader.load(path)
         self.logger.info("Ingesting notebook %s (%d chunks)", path, len(chunks))
-        return self.add_memories(
-            texts=[c["text"] for c in chunks],
-            metadata_list=[c["metadata"] for c in chunks],
+        return self._ingest_chunks(chunks, path)
+
+    def ingest_pdf(self, path: str) -> dict:
+        chunks = self.pdf_loader.load(path)
+        self.logger.info("Ingesting PDF %s (%d chunks)", path, len(chunks))
+        return self._ingest_chunks(chunks, path)
+
+    def ingest_docx(self, path: str) -> dict:
+        chunks = self.docx_loader.load(path)
+        self.logger.info("Ingesting DOCX %s (%d chunks)", path, len(chunks))
+        return self._ingest_chunks(chunks, path)
+
+    def ingest_directory(self, path: str, extensions: list[str] | None = None) -> dict:
+        loader = DirectoryLoader(
+            extensions=set(extensions) if extensions else None
         )
+        chunks = loader.load(path)
+        self.logger.info("Ingesting directory %s (%d chunks)", path, len(chunks))
+        return self._ingest_chunks(chunks, path)
+
+    def _ingest_chunks(self, chunks: list[dict], source: str) -> dict:
+        if not chunks:
+            return {"status": "empty", "source": source, "count": 0}
+        return {
+            **self.add_memories(
+                texts=[c["text"] for c in chunks],
+                metadata_list=[c["metadata"] for c in chunks],
+            ),
+            "source": source,
+        }
