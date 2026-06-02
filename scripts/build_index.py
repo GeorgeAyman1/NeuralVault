@@ -145,30 +145,33 @@ def build_index(
 
     # --- Write partition_vectors.bin ---
     # Vectors stored contiguously per cluster (cluster 0 first, then 1, ...).
-    # At query time this gives sequential reads instead of random page faults.
+    # At query time this gives n_probe sequential reads instead of random page faults.
+    #
+    # Algorithm: one sequential pass through the source file (fast, warm cache)
+    # with scatter-writes into pv (SSDs handle random writes well).
+    # Avoids the O(n_clusters × cluster_size) random-read pattern.
     print(f"\nWriting partition_vectors.bin ({n:,} x {dim}) ...")
     t0 = time.perf_counter()
     pv_path = index_dir / "partition_vectors.bin"
     pv = np.memmap(pv_path, dtype="float32", mode="w+", shape=(n, dim))
 
-    CHUNK = 50_000  # vectors per write chunk — keeps peak RAM ~50 MB
-    prev_log = 0
-    for c in range(n_clusters):
-        s, e = int(offsets[c]), int(offsets[c + 1])
-        if s == e:
-            continue
-        cluster_ids = ids[s:e]  # ascending order (built sequentially)
-        for ch in range(0, len(cluster_ids), CHUNK):
-            ch_ids = cluster_ids[ch: ch + CHUNK]
-            vecs = vectors[ch_ids].astype(np.float32)
-            norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-            norms = np.where(norms == 0, 1.0, norms)
-            vecs /= norms
-            pv[s + ch: s + ch + len(ch_ids)] = vecs
+    # pv_position[original_id] = position in pv  (single fancy-index op, O(n))
+    pv_position = np.empty(n, dtype=np.int32)
+    pv_position[ids] = np.arange(n, dtype=np.int32)
 
-        pct = (c + 1) / n_clusters * 100
+    prev_log = 0
+    for start in range(0, n, block_size):
+        end = min(start + block_size, n)
+        block = vectors[start:end].astype(np.float32)
+        norms = np.linalg.norm(block, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        block /= norms
+        dst = pv_position[start:end]   # target rows in pv for this block
+        pv[dst] = block                # scatter write: random but SSD-friendly
+
+        pct = end / n * 100
         if pct - prev_log >= 10:
-            print(f"  {pct:.0f}%  ({c+1}/{n_clusters})  {time.perf_counter()-t0:.1f}s")
+            print(f"  {pct:.0f}%  ({end:,}/{n:,})  {time.perf_counter()-t0:.1f}s")
             prev_log = pct
 
     pv.flush()
