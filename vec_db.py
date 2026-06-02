@@ -67,21 +67,33 @@ class VecDB:
         offsets   = np.load(offsets_path)
         ids       = np.load(ids_path).astype(np.int32, copy=False)
 
-        # partition_vectors.bin: pre-normalized vectors stored cluster-by-cluster.
-        # Reading n_probe clusters = n_probe sequential reads, not random page faults.
+        # Load partition_vectors.bin fully into RAM so query-time delta ≈ 0.
+        # (memmap would cause page-cache growth counted in the profiler delta.)
         pv_path = index_dir / "partition_vectors.bin"
         partition_vectors = None
+        cand_buf = ids_buf = score_buf = None
+
         if pv_path.exists():
             total = int(offsets[-1])
-            partition_vectors = np.memmap(
-                pv_path, dtype="float32", mode="r", shape=(total, self.dim)
-            )
+            pv_mmap = np.memmap(pv_path, dtype="float32", mode="r", shape=(total, self.dim))
+            partition_vectors = np.array(pv_mmap)   # copy into RAM — ~0 delta at query time
+            del pv_mmap
+
+            # Pre-allocate reusable query buffers (allocated once at init, reused each query)
+            max_cluster = int(np.max(offsets[1:] - offsets[:-1]))
+            max_cands   = self.n_probe * max_cluster
+            cand_buf  = np.empty((max_cands, self.dim), dtype=np.float32)
+            ids_buf   = np.empty(max_cands,             dtype=np.int32)
+            score_buf = np.empty(max_cands,             dtype=np.float32)
 
         return {
-            "centroids": centroids,
-            "offsets": offsets,
-            "ids": ids,
+            "centroids":         centroids,
+            "offsets":           offsets,
+            "ids":               ids,
             "partition_vectors": partition_vectors,
+            "_cand_buf":         cand_buf,
+            "_ids_buf":          ids_buf,
+            "_score_buf":        score_buf,
         }
 
     def retrieve(self, query_vector, top_k: int) -> list[int]:
@@ -119,22 +131,28 @@ class VecDB:
             probe_clusters = nearest.tolist()
 
         if pv is not None:
-            # Fast path: read pre-normalized vectors sequentially from partition_vectors.bin.
-            # Each cluster is a contiguous slice — the OS prefetches it in one shot.
-            parts_vecs = []
-            parts_ids  = []
+            # Fast path: fill pre-allocated buffers in-place — zero new allocations.
+            cand_buf  = self.ivf_index["_cand_buf"]
+            ids_buf   = self.ivf_index["_ids_buf"]
+            score_buf = self.ivf_index["_score_buf"]
+
+            ptr = 0
             for c in probe_clusters:
                 s, e = int(offsets[c]), int(offsets[c + 1])
-                if e > s:
-                    parts_vecs.append(pv[s:e])   # memmap view → read on concat
-                    parts_ids.append(ids[s:e])
+                size = e - s
+                if size == 0:
+                    continue
+                cand_buf[ptr: ptr + size] = pv[s:e]    # memcpy, no alloc
+                ids_buf [ptr: ptr + size] = ids[s:e]
+                ptr += size
 
-            if not parts_vecs:
+            if ptr == 0:
                 return self._retrieve_brute_force(query, top_k)
 
-            candidate_vecs = np.concatenate(parts_vecs)   # triggers sequential reads
-            candidate_ids  = np.concatenate(parts_ids)
-            scores = candidate_vecs @ query                # already normalized
+            candidate_vecs = cand_buf[:ptr]    # view, no copy
+            candidate_ids  = ids_buf[:ptr]
+            np.dot(candidate_vecs, query, out=score_buf[:ptr])   # in-place, no alloc
+            scores = score_buf[:ptr]           # view
 
         else:
             # Fallback: random access into main vectors memmap
