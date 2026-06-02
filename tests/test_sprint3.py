@@ -8,7 +8,6 @@ context and conversation history were passed through.
 """
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 from core.llm.context_builder import ContextBuilder, SYSTEM_INSTRUCTIONS

@@ -33,9 +33,6 @@ class MetadataStore:
     def get(self, index: int) -> dict[str, Any]:
         return self.records[index]
 
-    def count(self) -> int:
-        return len(self.records)
-
     def save(self, path: str = "data/processed/metadata.json") -> None:
         save_path = Path(path)
         save_path.parent.mkdir(parents=True, exist_ok=True)

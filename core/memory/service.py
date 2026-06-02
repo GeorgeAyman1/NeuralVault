@@ -278,7 +278,12 @@ class MemoryService:
             "query":        query,
             "answer":       answer,
             "memories_used": [
-                {"index": i, "text": m["text"], "score": m.get("score")}
+                {
+                    "index": i,
+                    "id":    m.get("id"),
+                    "text":  m["text"],
+                    "score": m.get("score"),
+                }
                 for i, m in enumerate(memories)
             ],
             "usage":        result.get("usage", {}),

@@ -1,0 +1,5 @@
+# Development / CI tooling (installed on top of requirements.txt)
+-r requirements.txt
+pytest
+httpx
+ruff

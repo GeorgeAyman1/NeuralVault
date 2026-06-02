@@ -9,7 +9,6 @@ Covers:
 - SemanticRetriever returns ranked results with metadata
 """
 import numpy as np
-import pytest
 
 from core.storage.vecdb_store import VecDBStore
 from core.storage.metadata_store import MetadataStore

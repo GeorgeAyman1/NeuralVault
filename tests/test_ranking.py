@@ -44,4 +44,4 @@ def test_importance_score_is_clamped():
 
     ranked = ranker.rank(results)
 
-    assert ranked[0]["ranking"]["importance_score"] == 1.0 
+    assert ranked[0]["ranking"]["importance_score"] == 1.0

@@ -1,6 +1,8 @@
 numpy
 scikit-learn
-memory-profiler
+sentence-transformers
+anthropic
 pypdf
 python-docx
-anthropic
+fastapi
+uvicorn

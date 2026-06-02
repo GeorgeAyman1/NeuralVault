@@ -80,7 +80,7 @@ class IVFIndex:
             return self.vectors[index]
 
         return self.vectors[index]
-    
+
     def save(self) -> None:
         if not self.is_fitted:
             raise ValueError("Cannot save IVF index before it is built.")

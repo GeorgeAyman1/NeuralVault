@@ -8,8 +8,6 @@ Covers:
 - MemoryService.ingest_* methods return correct status and chunk count
 - Empty / missing file error handling
 """
-import json
-import struct
 from pathlib import Path
 
 import pytest
@@ -28,11 +26,10 @@ def make_minimal_pdf(path: Path, pages: list[str]) -> None:
     Write a valid minimal single-/multi-page PDF with the given text on each page.
     Uses fpdf2 if available, otherwise falls back to pypdf's PdfWriter.
     """
-    import pypdf
     from pypdf import PdfWriter
     from pypdf.generic import (
-        ArrayObject, DictionaryObject, NameObject, NumberObject,
-        StreamObject, create_string_object,
+        NameObject, NumberObject,
+        StreamObject,
     )
 
     writer = PdfWriter()
@@ -121,7 +118,7 @@ def _write_basic_pdf(path: Path, pages: list[str]) -> None:
     # Update each page to reference the Pages object
     for pid in page_ids:
         page_line_idx = next(
-            i for i, l in enumerate(lines) if l.startswith(f"{pid} 0 obj".encode())
+            i for i, ln in enumerate(lines) if ln.startswith(f"{pid} 0 obj".encode())
         )
         lines[page_line_idx] = lines[page_line_idx].replace(
             b"/Type /Page ", f"/Type /Page /Parent {pages_obj_id} 0 R ".encode()

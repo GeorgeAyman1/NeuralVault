@@ -91,3 +91,53 @@ This enables:
 [Semantic Recall]
         ↓
 [LLM Context Injection]
+```
+
+---
+
+# Running NeuralVault
+
+## Local (development)
+
+```bash
+pip install -r requirements-dev.txt          # runtime + test tooling
+uvicorn main:app --reload                     # serves on http://localhost:8000
+```
+
+Open `http://localhost:8000/docs` for the interactive API.
+
+## Docker
+
+```bash
+cp .env.example .env                          # add your ANTHROPIC_API_KEY
+docker compose up -d                          # builds + runs, persists ./data and ./logs
+```
+
+The embedding model is cached in a named volume, so restarts are fast.
+
+## Configuration
+
+All settings are environment variables (see `.env.example`). The only one
+required for LLM chat is `ANTHROPIC_API_KEY`; without it the service still
+runs (ingestion, search, memory management) and `/memory/chat` returns 503.
+
+## Key endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /memory/add` · `/add-batch` | Store memories |
+| `POST /memory/search` | Semantic retrieval |
+| `POST /memory/chat` | LLM answer grounded in retrieved memories (with source attribution) |
+| `POST /memory/ingest/{pdf,docx,directory,notebook}` | Document ingestion |
+| `POST /memory/{prune,summarize,consolidation/merge}` | Memory intelligence |
+| `POST /memory/build-index` | Build the IVF index for scale |
+| `GET /health` · `/health/ready` · `/metrics` | Ops |
+
+## Tests
+
+```bash
+pytest                                         # 95 tests, fully offline (LLM mocked)
+ruff check core api main.py vec_db.py tests    # lint
+```
+
+CI runs both on every push and pull request (`.github/workflows/test.yml`).

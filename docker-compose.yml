@@ -1,0 +1,23 @@
+services:
+  neuralvault:
+    build: .
+    image: neuralvault:latest
+    container_name: neuralvault
+    ports:
+      - "8000:8000"
+    environment:
+      # Required for /memory/chat. Set in a .env file next to this compose file
+      # (ANTHROPIC_API_KEY=sk-ant-...) or export it in your shell.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - NEURALVAULT_LLM_MODEL=${NEURALVAULT_LLM_MODEL:-claude-opus-4-8}
+      - NEURALVAULT_LOG_LEVEL=${NEURALVAULT_LOG_LEVEL:-INFO}
+    volumes:
+      # Persist memories, indexes, and logs across container restarts
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Cache the embedding model so it isn't re-downloaded on every restart
+      - hf-cache:/home/appuser/.cache/huggingface
+    restart: unless-stopped
+
+volumes:
+  hf-cache:

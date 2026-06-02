@@ -1,5 +1,3 @@
-from datetime import datetime, UTC
-from math import exp
 from typing import Any
 from core.memory.decay import MemoryDecay
 
@@ -45,7 +43,7 @@ class MemoryRanker:
                 + recency_score * self.recency_weight
                 + importance_score * self.importance_weight
                 + frequency_score * self.frequency_weight
-            )           
+            )
 
             ranked_result = {
                 **result,
@@ -77,7 +75,7 @@ class MemoryRanker:
             return 0.0
 
         return max(0.0, min(importance, 1.0))
-    
+
     def _frequency_score(self, metadata: dict[str, Any]) -> float:
         retrieval_count = metadata.get("retrieval_count", 0)
 

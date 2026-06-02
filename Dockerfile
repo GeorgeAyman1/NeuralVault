@@ -9,13 +9,13 @@ WORKDIR /app
 
 # Install dependencies first (layer caching)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt uvicorn fastapi
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY core/ ./core/
 COPY api/ ./api/
-COPY vec_db.py scripts/ ./
-COPY main.py .
+COPY scripts/ ./scripts/
+COPY vec_db.py main.py ./
 
 # Non-root user
 RUN useradd --create-home appuser && chown -R appuser:appuser /app

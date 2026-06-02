@@ -8,3 +8,13 @@ authors = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+exclude = [".venv", "data", "logs", "notebooks", "benchmarks", "experiments"]
+
+[tool.ruff.lint]
+# E/W = pycodestyle, F = pyflakes (real bugs: unused imports, redefinitions).
+# E501 (line-too-long) is ignored — alignment-padded code triggers it without value.
+select = ["E", "F", "W"]
+ignore = ["E501"]
