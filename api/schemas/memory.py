@@ -46,3 +46,9 @@ class IngestPathRequest(BaseModel):
 class IngestDirectoryRequest(BaseModel):
     path: str = Field(..., min_length=1)
     extensions: list[str] | None = None
+
+
+class ChatRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    top_k: int = Field(default=5, ge=1, le=100)
+    use_conversation: bool = True

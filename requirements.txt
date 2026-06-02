@@ -3,3 +3,4 @@ scikit-learn
 memory-profiler
 pypdf
 python-docx
+anthropic

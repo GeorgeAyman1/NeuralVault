@@ -11,6 +11,7 @@ from api.schemas.memory import (
     BuildIndexRequest,
     IngestPathRequest,
     IngestDirectoryRequest,
+    ChatRequest,
 )
 from core.memory.service import MemoryService
 
@@ -141,3 +142,24 @@ def ingest_directory(request: IngestDirectoryRequest):
         return memory_service.ingest_directory(request.path, extensions=request.extensions)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ------------------------------------------------------------------ #
+# Sprint 3: LLM-grounded chat                                          #
+# ------------------------------------------------------------------ #
+
+@router.post("/chat")
+def chat(request: ChatRequest):
+    try:
+        return memory_service.chat(
+            query=request.query,
+            top_k=request.top_k,
+            use_conversation=request.use_conversation,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/chat/reset")
+def reset_conversation():
+    return memory_service.reset_conversation()

@@ -10,6 +10,9 @@ from core.ingestion.notebook_loader import NotebookLoader
 from core.ingestion.pdf_loader import PDFLoader
 from core.ingestion.docx_loader import DOCXLoader
 from core.ingestion.directory_loader import DirectoryLoader
+from core.llm.context_builder import ContextBuilder
+from core.llm.conversation import ConversationMemory
+from core.llm.llm_client import LLMClient
 
 
 class MemoryService:
@@ -20,7 +23,7 @@ class MemoryService:
     for small collections and IVF-backed VecDB after build_index() is called.
     """
 
-    def __init__(self, auto_load: bool = True):
+    def __init__(self, auto_load: bool = True, llm_client: LLMClient | None = None):
         self.logger          = get_logger(__name__)
         self.encoder         = TextEncoder()
         self.vector_store    = VecDBStore()
@@ -32,6 +35,9 @@ class MemoryService:
         self.pdf_loader           = PDFLoader()
         self.docx_loader          = DOCXLoader()
         self.directory_loader     = DirectoryLoader()
+        self.context_builder      = ContextBuilder()
+        self.llm                  = llm_client or LLMClient()
+        self.conversation         = ConversationMemory()
 
         if auto_load:
             self.load()
@@ -232,6 +238,55 @@ class MemoryService:
         after  = self.metadata_store.count()
         self.logger.info("Compacted: %d → %d memories", before, after)
         return {"status": "compacted", "before": before, "after": after, "removed": before - after}
+
+    # ------------------------------------------------------------------ #
+    # Sprint 3: LLM integration                                            #
+    # ------------------------------------------------------------------ #
+
+    def chat(
+        self,
+        query: str,
+        top_k: int = 5,
+        use_conversation: bool = True,
+    ) -> dict:
+        """
+        Answer a query grounded in retrieved memories.
+
+        Retrieves the top_k most relevant memories, builds a cached-prefix
+        system prompt from them, and asks the LLM. When use_conversation is
+        True, the exchange is appended to the running ConversationMemory so
+        follow-up questions retain context.
+        """
+        if not query or not query.strip():
+            raise ValueError("Query cannot be empty.")
+
+        memories      = self.search_memory(query, top_k=top_k)
+        system_blocks = self.context_builder.build_system_blocks(memories)
+
+        conversation = self.conversation if use_conversation else ConversationMemory()
+        conversation.add_user(query)
+
+        result = self.llm.complete(
+            system_blocks=system_blocks,
+            messages=conversation.get_messages(),
+        )
+        answer = result["text"]
+        conversation.add_assistant(answer)
+
+        self.logger.info("Chat: query='%s' memories=%d", query, len(memories))
+        return {
+            "query":        query,
+            "answer":       answer,
+            "memories_used": [
+                {"index": i, "text": m["text"], "score": m.get("score")}
+                for i, m in enumerate(memories)
+            ],
+            "usage":        result.get("usage", {}),
+        }
+
+    def reset_conversation(self) -> dict:
+        self.conversation.clear()
+        return {"status": "reset"}
 
     # ------------------------------------------------------------------ #
     # Ingestion                                                            #
