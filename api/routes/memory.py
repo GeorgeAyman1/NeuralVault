@@ -14,6 +14,7 @@ from api.schemas.memory import (
     ChatRequest,
 )
 from core.memory.service import MemoryService
+from core.llm.llm_client import LLMUnavailableError
 
 
 router = APIRouter(prefix="/memory", tags=["Memory"])
@@ -158,6 +159,8 @@ def chat(request: ChatRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except LLMUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.post("/chat/reset")

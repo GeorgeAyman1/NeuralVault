@@ -1,5 +1,11 @@
 from typing import Any
 
+from core.utils.config import get_settings
+
+
+class LLMUnavailableError(RuntimeError):
+    """Raised when the LLM cannot be used (e.g. no API key configured)."""
+
 
 class LLMClient:
     """
@@ -17,24 +23,31 @@ class LLMClient:
 
     def __init__(
         self,
-        model: str = "claude-opus-4-8",
+        model: str | None = None,
         client: Any | None = None,
         api_key: str | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
     ):
-        self.model      = model
-        self.max_tokens = max_tokens
+        settings        = get_settings()
+        self.model      = model or settings.llm_model
+        self.max_tokens = max_tokens or settings.llm_max_tokens
         self._client    = client
-        self._api_key   = api_key
+        self._api_key   = api_key or settings.anthropic_api_key
 
     def _get_client(self) -> Any:
         if self._client is None:
-            import anthropic  # lazy: module imports fine without the SDK installed
-            self._client = (
-                anthropic.Anthropic(api_key=self._api_key)
-                if self._api_key
-                else anthropic.Anthropic()
-            )
+            if not self._api_key:
+                raise LLMUnavailableError(
+                    "No ANTHROPIC_API_KEY configured — chat is unavailable. "
+                    "Set the environment variable to enable LLM features."
+                )
+            try:
+                import anthropic  # lazy: module imports fine without the SDK installed
+            except ImportError as e:
+                raise LLMUnavailableError(
+                    "The 'anthropic' package is not installed — run: pip install anthropic"
+                ) from e
+            self._client = anthropic.Anthropic(api_key=self._api_key)
         return self._client
 
     def complete(
