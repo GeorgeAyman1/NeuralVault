@@ -1,25 +1,29 @@
 """
 Build a compact IVF index for VecDB from a vector database.
 
-The index format (CSR layout) is stored in a directory:
+Index format (directory):
   centroids.npy          — (n_clusters, dim) float32, unit-normalized
-  partition_offsets.npy  — (n_clusters+1,) int64, start/end of each partition
-  partition_ids.npy      — (n_total,) int64, all vector IDs concatenated
+  partition_offsets.npy  — (n_clusters+1,) int64
+  partition_ids.npy      — (n_total,) int32
+  partition_vectors.bin  — (n_total, dim) float32, unit-normalized, cluster-ordered
+
+The partition_vectors.bin file stores each cluster's vectors contiguously, so
+query-time access is sequential (n_probe × ~cluster_size rows) rather than
+n_probe × cluster_size random page faults into the main DB file.
 
 Supports .npy files and raw binary .dat files (float32, shape N x dim).
 
 Usage:
-    python scripts/build_index.py --db-path data/vectors.npy \
-        --index-dir data/indexes/my_index
+    # .npy
+    python scripts/build_index.py --db-path data/vectors.npy --index-dir data/indexes/idx
 
-    # Raw binary .dat file (ADB format):
+    # Raw .dat (ADB format)
     python scripts/build_index.py --db-path OpenSubtitles_en_1M_emb_64.dat \
-        --index-dir ivf_1m --dim 64 --db-size 1000000 \
-        --n-clusters 4096 --sample-size 500000
+        --index-dir ivf_1m --dim 64 --db-size 1000000 --n-clusters 2048
 
-    # Large DB recommended settings:
-    python scripts/build_index.py --db-path data/vectors.npy \
-        --index-dir data/indexes/my_index \
+    # Large DB
+    python scripts/build_index.py --db-path OpenSubtitles_en_20M_emb_64.dat \
+        --index-dir ivf_20m --dim 64 --db-size 20000000 \
         --n-clusters 4096 --sample-size 500000 --block-size 200000
 """
 import argparse
@@ -47,7 +51,6 @@ def build_index(
             vectors = vectors[:db_size]
         n, dim = vectors.shape
     else:
-        # Raw binary memmap (e.g. .dat) — float32, shape (N, dim)
         if db_size is None:
             file_bytes = db_path.stat().st_size
             db_size = file_bytes // (dim * 4)
@@ -63,7 +66,6 @@ def build_index(
     sample_idx = rng.choice(n, size=actual_sample, replace=False)
     sample = vectors[sample_idx].astype(np.float32)
 
-    # Normalize sample so cosine ≡ dot product
     norms = np.linalg.norm(sample, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1.0, norms)
     sample /= norms
@@ -85,8 +87,7 @@ def build_index(
     centroids = kmeans.cluster_centers_.astype(np.float32)
     centroid_norms = np.linalg.norm(centroids, axis=1, keepdims=True)
     centroid_norms = np.where(centroid_norms == 0, 1.0, centroid_norms)
-    centroids /= centroid_norms  # unit-normalize for dot product assignment
-
+    centroids /= centroid_norms
     print(f"  Done in {time.perf_counter() - t0:.1f}s")
 
     # --- Assign all vectors in blocks ---
@@ -103,7 +104,6 @@ def build_index(
         block_norms = np.where(block_norms == 0, 1.0, block_norms)
         block /= block_norms
 
-        # (block_size, n_clusters) — nearest centroid = argmax of dot product
         scores = block @ centroids.T
         labels = np.argmax(scores, axis=1)
 
@@ -119,14 +119,13 @@ def build_index(
     print(f"  Assignment done in {time.perf_counter() - t0:.1f}s")
 
     # --- Build CSR arrays ---
-    # int32 for IDs: max 2^31-1 > 20M, halves RAM vs int64
     counts = np.array([len(p) for p in partition_lists], dtype=np.int64)
     offsets = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
 
     non_empty = [np.array(p, dtype=np.int32) for p in partition_lists if p]
     ids = np.concatenate(non_empty) if non_empty else np.array([], dtype=np.int32)
 
-    # --- Save ---
+    # --- Save CSR files ---
     index_dir.mkdir(parents=True, exist_ok=True)
     np.save(index_dir / "centroids.npy", centroids)
     np.save(index_dir / "partition_offsets.npy", offsets)
@@ -144,10 +143,43 @@ def build_index(
     print(f"  avg size:  {np.mean(sizes):.0f}")
     print(f"  min/max:   {min(sizes)}/{max(sizes)}")
 
+    # --- Write partition_vectors.bin ---
+    # Vectors stored contiguously per cluster (cluster 0 first, then 1, ...).
+    # At query time this gives sequential reads instead of random page faults.
+    print(f"\nWriting partition_vectors.bin ({n:,} x {dim}) ...")
+    t0 = time.perf_counter()
+    pv_path = index_dir / "partition_vectors.bin"
+    pv = np.memmap(pv_path, dtype="float32", mode="w+", shape=(n, dim))
+
+    CHUNK = 50_000  # vectors per write chunk — keeps peak RAM ~50 MB
+    prev_log = 0
+    for c in range(n_clusters):
+        s, e = int(offsets[c]), int(offsets[c + 1])
+        if s == e:
+            continue
+        cluster_ids = ids[s:e]  # ascending order (built sequentially)
+        for ch in range(0, len(cluster_ids), CHUNK):
+            ch_ids = cluster_ids[ch: ch + CHUNK]
+            vecs = vectors[ch_ids].astype(np.float32)
+            norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            vecs /= norms
+            pv[s + ch: s + ch + len(ch_ids)] = vecs
+
+        pct = (c + 1) / n_clusters * 100
+        if pct - prev_log >= 10:
+            print(f"  {pct:.0f}%  ({c+1}/{n_clusters})  {time.perf_counter()-t0:.1f}s")
+            prev_log = pct
+
+    pv.flush()
+    elapsed = time.perf_counter() - t0
+    print(f"  Done in {elapsed:.1f}s")
+    print(f"  partition_vectors.bin  ({n}, {dim})  {pv.nbytes / 1e9:.2f} GB")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Build IVF index for VecDB")
-    parser.add_argument("--db-path", required=True, help="Path to .npy vector database")
+    parser.add_argument("--db-path", required=True, help="Path to vector database")
     parser.add_argument("--index-dir", required=True, help="Directory to write index files")
     parser.add_argument("--n-clusters", type=int, default=4096)
     parser.add_argument("--sample-size", type=int, default=500_000)
