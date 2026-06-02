@@ -18,26 +18,26 @@ from scripts.build_index import build_index
 DIMENSION = 64
 CONFIGS = [
     {
-        "dat_file": "../OpenSubtitles_en_1M_emb_64.dat",
+        "dat_file": "OpenSubtitles_en_1M_emb_64.dat",
         "db_size": 1_000_000,
         "index_dir": "ivf_1m",
-        "zip_name": "../saved_db_1m.zip",
+        "zip_name": "saved_db_1m.zip",
         "n_clusters": 2048,
         "sample_size": 300_000,
     },
     {
-        "dat_file": "../OpenSubtitles_en_10M_emb_64.dat",
+        "dat_file": "OpenSubtitles_en_10M_emb_64.dat",
         "db_size": 10_000_000,
         "index_dir": "ivf_10m",
-        "zip_name": "../saved_db_10m.zip",
+        "zip_name": "saved_db_10m.zip",
         "n_clusters": 4096,
         "sample_size": 500_000,
     },
     {
-        "dat_file": "../OpenSubtitles_en_20M_emb_64.dat",
+        "dat_file": "OpenSubtitles_en_20M_emb_64.dat",
         "db_size": 20_000_000,
         "index_dir": "ivf_20m",
-        "zip_name": "../saved_db_20m.zip",
+        "zip_name": "saved_db_20m.zip",
         "n_clusters": 4096,
         "sample_size": 500_000,
     },
