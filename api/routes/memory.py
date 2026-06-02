@@ -1,17 +1,18 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from api.schemas.memory import (
     MemoryCreateRequest,
     MemorySearchRequest,
     MemoryBatchCreateRequest,
     ConsolidationRequest,
+    BuildIndexRequest,
 )
-
 from core.memory.service import MemoryService
 
 
 router = APIRouter(prefix="/memory", tags=["Memory"])
 
+# Single shared instance — not recreated per request
 memory_service = MemoryService()
 
 
@@ -23,54 +24,47 @@ def add_memory(request: MemoryCreateRequest):
     )
 
 
-@router.post("/search")
-def search_memory(request: MemorySearchRequest):
-    search_service = MemoryService(
-        auto_load=True,
-        use_ivf=request.use_ivf,
-        use_hybrid=request.use_hybrid,
-    )
-
-    if request.use_ivf:
-        search_service.build_index()
-
-    return search_service.search_memory(
-        query=request.query,
-        top_k=request.top_k,
-    )
-
-@router.get("/count")
-def count_memories():
-    return {
-        "count": memory_service.count()
-    }
-
-
-@router.post("/save")
-def save_memory():
-    memory_service.save()
-
-    return {
-        "status": "saved",
-        "count": memory_service.count()
-    }
-
-
-@router.post("/load")
-def load_memory():
-    memory_service.load()
-
-    return {
-        "status": "loaded",
-        "count": memory_service.count()
-    }
-
 @router.post("/add-batch")
 def add_memories(request: MemoryBatchCreateRequest):
     return memory_service.add_memories(
         texts=request.texts,
         metadata_list=request.metadata_list,
     )
+
+
+@router.post("/search")
+def search_memory(request: MemorySearchRequest):
+    return memory_service.search_memory(
+        query=request.query,
+        top_k=request.top_k,
+    )
+
+
+@router.post("/build-index")
+def build_index(request: BuildIndexRequest | None = None):
+    n_clusters = request.n_clusters if request else None
+    return memory_service.build_index(n_clusters=n_clusters)
+
+
+@router.get("/count")
+def count_memories():
+    return {"count": memory_service.count()}
+
+
+@router.post("/save")
+def save_memory():
+    memory_service.save()
+    return {"status": "saved", "count": memory_service.count()}
+
+
+@router.post("/load")
+def load_memory():
+    try:
+        memory_service.load()
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "loaded", "count": memory_service.count()}
+
 
 @router.post("/consolidation/candidates")
 def find_consolidation_candidates(request: ConsolidationRequest):

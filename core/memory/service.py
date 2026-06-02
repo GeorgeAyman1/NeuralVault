@@ -1,5 +1,5 @@
 from core.embeddings.encoder import TextEncoder
-from core.storage.vector_store import VectorStore
+from core.storage.vecdb_store import VecDBStore
 from core.storage.metadata_store import MetadataStore
 from core.indexing.retrieval import SemanticRetriever
 from core.utils.logging import get_logger
@@ -9,16 +9,18 @@ from core.ingestion.notebook_loader import NotebookLoader
 
 class MemoryService:
     """
-    High-level service for adding, saving, loading, and searching semantic memories.
+    High-level service for adding, searching, and managing semantic memories.
+
+    Storage backend is VecDBStore, which uses brute-force cosine similarity
+    for small collections and IVF-backed VecDB after build_index() is called.
     """
 
-    def __init__(self, auto_load: bool = True, use_ivf: bool = False, use_hybrid: bool = False,):
-        self.encoder = TextEncoder()
-        self.vector_store = VectorStore()
+    def __init__(self, auto_load: bool = True):
+        self.logger         = get_logger(__name__)
+        self.encoder        = TextEncoder()
+        self.vector_store   = VecDBStore()
         self.metadata_store = MetadataStore()
-        self.logger = get_logger(__name__)
-        self.logger.info("Initializing MemoryService")
-        self.consolidator = MemoryConsolidator()
+        self.consolidator   = MemoryConsolidator()
         self.notebook_loader = NotebookLoader()
 
         if auto_load:
@@ -28,119 +30,102 @@ class MemoryService:
             encoder=self.encoder,
             vector_store=self.vector_store,
             metadata_store=self.metadata_store,
-            use_ivf=use_ivf,
-            use_hybrid=use_hybrid,
         )
+
+        self.logger.info("MemoryService ready — %d memories loaded", self.vector_store.count())
+
+    # ------------------------------------------------------------------ #
+    # Core memory operations                                               #
+    # ------------------------------------------------------------------ #
 
     def add_memory(self, text: str, metadata: dict | None = None) -> dict:
         vector = self.encoder.encode(text)
 
-        metadata_index = self.metadata_store.add(
-            text=text,
-            metadata=metadata,
-        )
-
-        vector_index = self.vector_store.add(vector)
+        metadata_index = self.metadata_store.add(text=text, metadata=metadata)
+        vector_index   = self.vector_store.add(vector)
 
         self.save()
-        self.logger.info("Stored memory: metadata_index=%s vector_index=%s", metadata_index, vector_index)
+        self.logger.info("Stored memory idx=%d", metadata_index)
 
         return {
-            "status": "stored",
-            "memory_index": metadata_index,
-            "vector_index": vector_index,
+            "status":        "stored",
+            "memory_index":  metadata_index,
+            "vector_index":  vector_index,
         }
 
-    def search_memory(self, query: str, top_k: int = 5) -> list[dict]:
-        self.logger.info("Searching memory: query='%s' top_k=%s", query, top_k)
-        return self.retriever.search(query=query, top_k=top_k)
-
-    def save(self) -> None:
-        self.vector_store.save()
-        self.metadata_store.save()
-        self.logger.info("Saving memory stores")
-
-    def load(self) -> None:
-        self.vector_store.load()
-        self.metadata_store.load()
-        self.logger.info("Loading memory stores")
-
-        if self.vector_store.count() != self.metadata_store.count():
-            raise ValueError(
-                "Vector store and metadata store are out of sync. "
-                f"Vectors: {self.vector_store.count()}, "
-                f"Metadata: {self.metadata_store.count()}"
-            )
-
-    def count(self) -> int:
-        return self.metadata_store.count()
-    
     def add_memories(self, texts: list[str], metadata_list: list[dict] | None = None) -> dict:
         if not texts:
             raise ValueError("Texts list cannot be empty.")
-
         if metadata_list is not None and len(metadata_list) != len(texts):
             raise ValueError("metadata_list must match texts length.")
 
         vectors = self.encoder.encode_batch(texts)
+        stored  = []
 
-        stored_indices = []
-
-        for index, text in enumerate(texts):
-            metadata = metadata_list[index] if metadata_list else None
-
-            metadata_index = self.metadata_store.add(
-                text=text,
-                metadata=metadata,
-            )
-
-            vector_index = self.vector_store.add(vectors[index])
-
-            stored_indices.append({
-                "memory_index": metadata_index,
-                "vector_index": vector_index,
-            })
+        for i, text in enumerate(texts):
+            meta           = metadata_list[i] if metadata_list else None
+            metadata_index = self.metadata_store.add(text=text, metadata=meta)
+            vector_index   = self.vector_store.add(vectors[i])
+            stored.append({"memory_index": metadata_index, "vector_index": vector_index})
 
         self.save()
-        self.logger.info("Stored batch memories: count=%s", len(texts))
+        self.logger.info("Stored batch of %d memories", len(texts))
 
-        return {
-            "status": "stored",
-            "count": len(texts),
-            "items": stored_indices,
-        }
+        return {"status": "stored", "count": len(texts), "items": stored}
 
-    def build_index(self) -> None:
-        if self.retriever.use_ivf:
-            self.logger.info("Building IVF index")
-            self.retriever.build_ivf()
+    def search_memory(self, query: str, top_k: int = 5) -> list[dict]:
+        self.logger.info("Search: query='%s' top_k=%d", query, top_k)
+        return self.retriever.search(query=query, top_k=top_k)
+
+    # ------------------------------------------------------------------ #
+    # Index                                                                #
+    # ------------------------------------------------------------------ #
+
+    def build_index(self, n_clusters: int | None = None) -> dict:
+        n = self.vector_store.count()
+        self.logger.info("Building IVF index for %d memories", n)
+        self.vector_store.build_index(n_clusters=n_clusters)
+        status = "built" if self.vector_store._index_valid else "skipped (too few memories)"
+        self.logger.info("Index status: %s", status)
+        return {"status": status, "memory_count": n}
+
+    # ------------------------------------------------------------------ #
+    # Persistence                                                          #
+    # ------------------------------------------------------------------ #
+
+    def save(self) -> None:
+        self.vector_store.save()
+        self.metadata_store.save()
+
+    def load(self) -> None:
+        self.vector_store.load()
+        self.metadata_store.load()
+
+        if self.vector_store.count() != self.metadata_store.count():
+            raise ValueError(
+                f"Store mismatch — vectors: {self.vector_store.count()}, "
+                f"metadata: {self.metadata_store.count()}"
+            )
+
+    def count(self) -> int:
+        return self.metadata_store.count()
+
+    # ------------------------------------------------------------------ #
+    # Memory intelligence                                                  #
+    # ------------------------------------------------------------------ #
 
     def find_consolidation_candidates(self, similarity_threshold: float = 0.85) -> list[dict]:
+        self.logger.info("Finding consolidation candidates (threshold=%.2f)", similarity_threshold)
         consolidator = MemoryConsolidator(similarity_threshold=similarity_threshold)
-
-        self.logger.info(
-            "Finding consolidation candidates: threshold=%s",
-            similarity_threshold,
-        )
-
         return consolidator.find_candidates(
             vectors=self.vector_store.vectors,
             records=self.metadata_store.records,
-    )
+        )
 
     def ingest_notebook(self, path: str) -> dict:
         chunks = self.notebook_loader.load(path)
-
-        texts = [chunk["text"] for chunk in chunks]
-        metadata_list = [chunk["metadata"] for chunk in chunks]
-
-        self.logger.info(
-            "Ingesting notebook: path=%s chunks=%s",
-            path,
-            len(chunks),
-        )
-
+        self.logger.info("Ingesting notebook %s (%d chunks)", path, len(chunks))
         return self.add_memories(
-            texts=texts,
-            metadata_list=metadata_list,
-    )
+            texts=[c["text"] for c in chunks],
+            metadata_list=[c["metadata"] for c in chunks],
+        )

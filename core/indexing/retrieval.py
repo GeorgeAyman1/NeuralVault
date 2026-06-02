@@ -1,88 +1,54 @@
 from core.embeddings.encoder import TextEncoder
-from core.storage.vector_store import VectorStore
+from core.storage.vecdb_store import VecDBStore
 from core.storage.metadata_store import MetadataStore
-from core.indexing.ivf_index import IVFIndex
 from core.memory.ranking import MemoryRanker
 from core.indexing.hybrid_retrieval import HybridRetrieval
 
 
 class SemanticRetriever:
     """
-    Handles semantic retrieval using either brute-force or IVF search.
+    Retrieves memories using VecDBStore (brute-force or IVF, automatic).
+
+    Post-processes results through MemoryRanker (similarity + recency +
+    importance + frequency) and optionally through HybridRetrieval.
     """
 
     def __init__(
         self,
         encoder: TextEncoder,
-        vector_store: VectorStore,
+        vector_store: VecDBStore,
         metadata_store: MetadataStore,
-        use_ivf: bool = False,
-        n_clusters: int = 8,
-        n_probe: int = 2,
         use_hybrid: bool = False,
     ):
-        self.encoder = encoder
-        self.vector_store = vector_store
+        self.encoder        = encoder
+        self.vector_store   = vector_store
         self.metadata_store = metadata_store
-        self.use_ivf = use_ivf
-        self.ranker = MemoryRanker()
-        self.use_hybrid = use_hybrid
-        self.hybrid_retrieval = HybridRetrieval()
-
-        self.ivf_index = IVFIndex(
-            n_clusters=n_clusters,
-            n_probe=n_probe,
-        )
-
-        self.ivf_ready = False
-
-    def build_ivf(self) -> None:
-        if self.vector_store.count() == 0:
-            self.ivf_ready = False
-            return
-
-        self.ivf_index.build(self.vector_store.vectors)
-        self.ivf_ready = True
+        self.use_hybrid     = use_hybrid
+        self.ranker         = MemoryRanker()
+        self.hybrid         = HybridRetrieval()
 
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         if not query or not query.strip():
             raise ValueError("Query cannot be empty.")
 
         query_vector = self.encoder.encode(query)
-
-        if self.use_ivf:
-            if not self.ivf_ready:
-                self.build_ivf()
-
-            results = self.ivf_index.search(
-                query_vector=query_vector,
-                top_k=top_k,
-            )
-        else:
-            results = self.vector_store.search(
-                query_vector=query_vector,
-                top_k=top_k,
-            )
+        raw_results  = self.vector_store.search(query_vector, top_k=top_k)
 
         output = []
-
-        for index, score in results:
+        for index, score in raw_results:
             self.metadata_store.increment_retrieval_count(index)
             metadata = self.metadata_store.get(index)
             output.append({
-                "score": round(score, 4),
-                "text": metadata["text"],
-                "metadata": metadata["metadata"],
+                "score":      round(score, 4),
+                "text":       metadata["text"],
+                "metadata":   metadata["metadata"],
                 "created_at": metadata["created_at"],
-                "id": metadata["id"],
+                "id":         metadata["id"],
             })
 
-        ranked_results = self.ranker.rank(output)
+        ranked = self.ranker.rank(output)
 
         if self.use_hybrid:
-            return self.hybrid_retrieval.rerank(
-                query=query,
-                semantic_results=ranked_results,
-            )
+            return self.hybrid.rerank(query=query, semantic_results=ranked)
 
-        return ranked_results
+        return ranked
