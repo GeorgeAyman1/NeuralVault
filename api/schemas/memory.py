@@ -22,5 +22,18 @@ class ConsolidationRequest(BaseModel):
     similarity_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
 
+class MergeRequest(BaseModel):
+    index_a: int = Field(..., ge=0)
+    index_b: int = Field(..., ge=0)
+
+
+class PruneRequest(BaseModel):
+    threshold: float = Field(default=0.1, ge=0.0, le=1.0)
+
+
+class SummarizeRequest(BaseModel):
+    indices: list[int] = Field(..., min_length=2)
+
+
 class BuildIndexRequest(BaseModel):
     n_clusters: int | None = Field(default=None, ge=16, le=65536)

@@ -36,6 +36,7 @@ class VecDBStore:
         self._matrix: np.ndarray | None = None   # (n, dim) float32, unit-normalized
         self._vecdb:  VecDB | None = None
         self._index_valid = False  # True only when VecDB is in sync with _matrix
+        self._deleted: set[int] = set()           # soft-deleted row indices
 
     # ------------------------------------------------------------------ #
     # Write                                                                #
@@ -49,7 +50,27 @@ class VecDBStore:
         return len(self._matrix) - 1
 
     def count(self) -> int:
-        return 0 if self._matrix is None else len(self._matrix)
+        n = 0 if self._matrix is None else len(self._matrix)
+        return max(0, n - len(self._deleted))
+
+    def delete(self, index: int) -> None:
+        if self._matrix is not None and 0 <= index < len(self._matrix):
+            self._deleted.add(index)
+            self._index_valid = False
+
+    def compact(self, kept_indices: list[int]) -> None:
+        """Rebuild matrix keeping only kept_indices rows (from MetadataStore.compact)."""
+        if not kept_indices:
+            self._matrix = None
+        elif self._matrix is not None:
+            self._matrix = self._matrix[np.array(kept_indices, dtype=np.int64)]
+        self._deleted    = set()
+        self._vecdb      = None
+        self._index_valid = False
+
+    def sync_deleted(self, records: list[dict]) -> None:
+        """Reconstruct _deleted from metadata records (called after load)."""
+        self._deleted = {i for i, r in enumerate(records) if r.get("deleted", False)}
 
     # ------------------------------------------------------------------ #
     # Persistence                                                          #
@@ -118,7 +139,7 @@ class VecDBStore:
     # ------------------------------------------------------------------ #
 
     def search(self, query_vector: np.ndarray, top_k: int = 5) -> list[tuple[int, float]]:
-        if self._matrix is None:
+        if self._matrix is None or self.count() == 0:
             return []
 
         q = query_vector.reshape(-1).astype(np.float32)
@@ -126,17 +147,21 @@ class VecDBStore:
         q_norm = q / norm if norm > 0 else q
 
         if self._index_valid and self._vecdb is not None:
-            ids = self._vecdb.retrieve(q_norm, top_k)
-            # Vectors from encoder are already unit-normalized → dot = cosine sim
+            # Request extra to cover any deleted hits
+            fetch_k = min(top_k + len(self._deleted), len(self._matrix))
+            ids = self._vecdb.retrieve(q_norm, fetch_k)
+            ids = [i for i in ids if i not in self._deleted][:top_k]
             return [(int(i), float(self._matrix[i] @ q_norm)) for i in ids]
 
-        # Brute-force cosine similarity on the in-memory matrix
-        # (encoder normalizes embeddings so no per-vector norm needed)
-        scores  = self._matrix @ q_norm
-        k       = min(top_k, len(scores))
+        # Brute-force: zero out deleted rows so they can't win
+        scores = self._matrix @ q_norm
+        for d in self._deleted:
+            scores[d] = -np.inf
+
+        k = min(top_k, self.count())
         top_idx = np.argpartition(scores, -k)[-k:]
         top_idx = top_idx[np.argsort(scores[top_idx])[::-1]]
-        return [(int(i), float(scores[i])) for i in top_idx]
+        return [(int(i), float(scores[i])) for i in top_idx if scores[i] > -np.inf]
 
     # ------------------------------------------------------------------ #
     # Compatibility shim for MemoryConsolidator (expects list[np.ndarray]) #

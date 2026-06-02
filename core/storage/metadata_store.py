@@ -56,5 +56,17 @@ class MetadataStore:
     def increment_retrieval_count(self, index: int) -> None:
         record = self.records[index]
         metadata = record.setdefault("metadata", {})
-
         metadata["retrieval_count"] = metadata.get("retrieval_count", 0) + 1
+
+    def delete(self, index: int) -> None:
+        if 0 <= index < len(self.records):
+            self.records[index]["deleted"] = True
+
+    def compact(self) -> list[int]:
+        """Remove deleted records. Returns the original indices that were kept."""
+        kept = [i for i, r in enumerate(self.records) if not r.get("deleted", False)]
+        self.records = [self.records[i] for i in kept]
+        return kept
+
+    def count(self) -> int:
+        return sum(1 for r in self.records if not r.get("deleted", False))

@@ -5,6 +5,9 @@ from api.schemas.memory import (
     MemorySearchRequest,
     MemoryBatchCreateRequest,
     ConsolidationRequest,
+    MergeRequest,
+    PruneRequest,
+    SummarizeRequest,
     BuildIndexRequest,
 )
 from core.memory.service import MemoryService
@@ -18,26 +21,25 @@ memory_service = MemoryService()
 
 @router.post("/add")
 def add_memory(request: MemoryCreateRequest):
-    return memory_service.add_memory(
-        text=request.text,
-        metadata=request.metadata,
-    )
+    return memory_service.add_memory(text=request.text, metadata=request.metadata)
 
 
 @router.post("/add-batch")
 def add_memories(request: MemoryBatchCreateRequest):
-    return memory_service.add_memories(
-        texts=request.texts,
-        metadata_list=request.metadata_list,
-    )
+    return memory_service.add_memories(texts=request.texts, metadata_list=request.metadata_list)
 
 
 @router.post("/search")
 def search_memory(request: MemorySearchRequest):
-    return memory_service.search_memory(
-        query=request.query,
-        top_k=request.top_k,
-    )
+    return memory_service.search_memory(query=request.query, top_k=request.top_k)
+
+
+@router.delete("/{index}")
+def delete_memory(index: int):
+    try:
+        return memory_service.delete_memory(index)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/build-index")
@@ -66,8 +68,38 @@ def load_memory():
     return {"status": "loaded", "count": memory_service.count()}
 
 
+@router.post("/compact")
+def compact():
+    return memory_service.compact()
+
+
+# ------------------------------------------------------------------ #
+# Sprint 1: Memory intelligence                                        #
+# ------------------------------------------------------------------ #
+
 @router.post("/consolidation/candidates")
 def find_consolidation_candidates(request: ConsolidationRequest):
     return memory_service.find_consolidation_candidates(
         similarity_threshold=request.similarity_threshold,
     )
+
+
+@router.post("/consolidation/merge")
+def merge_memories(request: MergeRequest):
+    try:
+        return memory_service.merge_memories(request.index_a, request.index_b)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/prune")
+def prune_memories(request: PruneRequest):
+    return memory_service.prune_memories(threshold=request.threshold)
+
+
+@router.post("/summarize")
+def summarize_memories(request: SummarizeRequest):
+    try:
+        return memory_service.summarize_memories(indices=request.indices)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

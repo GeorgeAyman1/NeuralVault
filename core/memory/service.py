@@ -4,6 +4,8 @@ from core.storage.metadata_store import MetadataStore
 from core.indexing.retrieval import SemanticRetriever
 from core.utils.logging import get_logger
 from core.memory.consolidation import MemoryConsolidator
+from core.memory.pruning import MemoryPruner
+from core.memory.summarization import MemorySummarizer
 from core.ingestion.notebook_loader import NotebookLoader
 
 
@@ -16,11 +18,13 @@ class MemoryService:
     """
 
     def __init__(self, auto_load: bool = True):
-        self.logger         = get_logger(__name__)
-        self.encoder        = TextEncoder()
-        self.vector_store   = VecDBStore()
-        self.metadata_store = MetadataStore()
-        self.consolidator   = MemoryConsolidator()
+        self.logger          = get_logger(__name__)
+        self.encoder         = TextEncoder()
+        self.vector_store    = VecDBStore()
+        self.metadata_store  = MetadataStore()
+        self.consolidator    = MemoryConsolidator()
+        self.pruner          = MemoryPruner()
+        self.summarizer      = MemorySummarizer()
         self.notebook_loader = NotebookLoader()
 
         if auto_load:
@@ -35,23 +39,16 @@ class MemoryService:
         self.logger.info("MemoryService ready — %d memories loaded", self.vector_store.count())
 
     # ------------------------------------------------------------------ #
-    # Core memory operations                                               #
+    # Core CRUD                                                            #
     # ------------------------------------------------------------------ #
 
     def add_memory(self, text: str, metadata: dict | None = None) -> dict:
-        vector = self.encoder.encode(text)
-
+        vector         = self.encoder.encode(text)
         metadata_index = self.metadata_store.add(text=text, metadata=metadata)
         vector_index   = self.vector_store.add(vector)
-
         self.save()
         self.logger.info("Stored memory idx=%d", metadata_index)
-
-        return {
-            "status":        "stored",
-            "memory_index":  metadata_index,
-            "vector_index":  vector_index,
-        }
+        return {"status": "stored", "memory_index": metadata_index, "vector_index": vector_index}
 
     def add_memories(self, texts: list[str], metadata_list: list[dict] | None = None) -> dict:
         if not texts:
@@ -61,7 +58,6 @@ class MemoryService:
 
         vectors = self.encoder.encode_batch(texts)
         stored  = []
-
         for i, text in enumerate(texts):
             meta           = metadata_list[i] if metadata_list else None
             metadata_index = self.metadata_store.add(text=text, metadata=meta)
@@ -70,12 +66,26 @@ class MemoryService:
 
         self.save()
         self.logger.info("Stored batch of %d memories", len(texts))
-
         return {"status": "stored", "count": len(texts), "items": stored}
+
+    def delete_memory(self, index: int) -> dict:
+        if index < 0 or index >= len(self.metadata_store.records):
+            raise ValueError(f"Index {index} out of range.")
+        if self.metadata_store.records[index].get("deleted", False):
+            raise ValueError(f"Memory at index {index} is already deleted.")
+
+        self.metadata_store.delete(index)
+        self.vector_store.delete(index)
+        self.save()
+        self.logger.info("Soft-deleted memory idx=%d", index)
+        return {"status": "deleted", "index": index}
 
     def search_memory(self, query: str, top_k: int = 5) -> list[dict]:
         self.logger.info("Search: query='%s' top_k=%d", query, top_k)
         return self.retriever.search(query=query, top_k=top_k)
+
+    def count(self) -> int:
+        return self.metadata_store.count()
 
     # ------------------------------------------------------------------ #
     # Index                                                                #
@@ -86,7 +96,6 @@ class MemoryService:
         self.logger.info("Building IVF index for %d memories", n)
         self.vector_store.build_index(n_clusters=n_clusters)
         status = "built" if self.vector_store._index_valid else "skipped (too few memories)"
-        self.logger.info("Index status: %s", status)
         return {"status": status, "memory_count": n}
 
     # ------------------------------------------------------------------ #
@@ -100,6 +109,8 @@ class MemoryService:
     def load(self) -> None:
         self.vector_store.load()
         self.metadata_store.load()
+        # Sync deleted indices from metadata (source of truth)
+        self.vector_store.sync_deleted(self.metadata_store.records)
 
         if self.vector_store.count() != self.metadata_store.count():
             raise ValueError(
@@ -107,11 +118,8 @@ class MemoryService:
                 f"metadata: {self.metadata_store.count()}"
             )
 
-    def count(self) -> int:
-        return self.metadata_store.count()
-
     # ------------------------------------------------------------------ #
-    # Memory intelligence                                                  #
+    # Sprint 1: Memory intelligence                                        #
     # ------------------------------------------------------------------ #
 
     def find_consolidation_candidates(self, similarity_threshold: float = 0.85) -> list[dict]:
@@ -121,6 +129,107 @@ class MemoryService:
             vectors=self.vector_store.vectors,
             records=self.metadata_store.records,
         )
+
+    def merge_memories(self, index_a: int, index_b: int) -> dict:
+        """
+        Merge two memories into one re-encoded combined memory, delete both originals.
+        """
+        records = self.metadata_store.records
+        if index_a == index_b:
+            raise ValueError("Cannot merge a memory with itself.")
+        for idx in (index_a, index_b):
+            if idx < 0 or idx >= len(records):
+                raise ValueError(f"Index {idx} out of range.")
+            if records[idx].get("deleted", False):
+                raise ValueError(f"Memory at index {idx} is already deleted.")
+
+        record_a = records[index_a]
+        record_b = records[index_b]
+
+        merged_text = f"{record_a['text']}\n{record_b['text']}"
+        merged_meta = {
+            **record_a.get("metadata", {}),
+            "merged_from": [record_a["id"], record_b["id"]],
+        }
+
+        result = self.add_memory(merged_text, metadata=merged_meta)
+
+        # Delete originals (add_memory may have grown the records list, so indices stable)
+        self.metadata_store.delete(index_a)
+        self.vector_store.delete(index_a)
+        self.metadata_store.delete(index_b)
+        self.vector_store.delete(index_b)
+
+        self.save()
+        self.logger.info("Merged memories %d + %d → new idx %d", index_a, index_b,
+                         result["memory_index"])
+        return {**result, "merged_from": [index_a, index_b]}
+
+    def prune_memories(self, threshold: float = 0.1) -> dict:
+        """
+        Soft-delete memories whose keep-score is below threshold.
+        """
+        pruner    = MemoryPruner(threshold=threshold)
+        prunable  = pruner.find_prunable(self.metadata_store.records)
+
+        for idx in prunable:
+            self.metadata_store.delete(idx)
+            self.vector_store.delete(idx)
+
+        self.save()
+        self.logger.info("Pruned %d memories (threshold=%.2f)", len(prunable), threshold)
+        return {"status": "pruned", "pruned_count": len(prunable), "pruned_indices": prunable}
+
+    def summarize_memories(self, indices: list[int]) -> dict:
+        """
+        Create a summary memory from the given indices, then delete the originals.
+        Sprint 1: extractive. Sprint 3: LLM-generated.
+        """
+        if len(indices) < 2:
+            raise ValueError("Need at least 2 memories to summarize.")
+
+        records = self.metadata_store.records
+        vstore  = self.vector_store
+
+        for idx in indices:
+            if idx < 0 or idx >= len(records):
+                raise ValueError(f"Index {idx} out of range.")
+            if records[idx].get("deleted", False):
+                raise ValueError(f"Memory at index {idx} is already deleted.")
+
+        source_records = [records[i] for i in indices]
+        source_vectors = [vstore._matrix[i] for i in indices]
+
+        summary_text = self.summarizer.summarize(source_records, source_vectors)
+        source_ids   = [r["id"] for r in source_records]
+
+        result = self.add_memory(summary_text, metadata={"summarized_from": source_ids})
+
+        for idx in indices:
+            self.metadata_store.delete(idx)
+            self.vector_store.delete(idx)
+
+        self.save()
+        self.logger.info("Summarized %d memories → new idx %d", len(indices),
+                         result["memory_index"])
+        return {**result, "summarized_count": len(indices), "summarized_from": source_ids}
+
+    def compact(self) -> dict:
+        """
+        Permanently remove all soft-deleted entries from both stores.
+        Rebuilds contiguous indices. Invalidates any existing IVF index.
+        """
+        before = len(self.metadata_store.records)
+        kept   = self.metadata_store.compact()
+        self.vector_store.compact(kept)
+        self.save()
+        after  = self.metadata_store.count()
+        self.logger.info("Compacted: %d → %d memories", before, after)
+        return {"status": "compacted", "before": before, "after": after, "removed": before - after}
+
+    # ------------------------------------------------------------------ #
+    # Ingestion                                                            #
+    # ------------------------------------------------------------------ #
 
     def ingest_notebook(self, path: str) -> dict:
         chunks = self.notebook_loader.load(path)
