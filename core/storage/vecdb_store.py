@@ -4,6 +4,7 @@ import numpy as np
 
 from vec_db import VecDB
 from scripts.build_index import build_index as _build_ivf_index
+from core.utils.config import get_settings
 
 
 class VecDBStore:
@@ -23,16 +24,14 @@ class VecDBStore:
     to callers.
     """
 
-    DEFAULT_DB_PATH    = "data/embeddings/vectors.npy"
-    DEFAULT_INDEX_PATH = "data/indexes/memory_ivf"
-
     def __init__(
         self,
-        db_path: str = DEFAULT_DB_PATH,
-        index_path: str = DEFAULT_INDEX_PATH,
+        db_path: str | None = None,
+        index_path: str | None = None,
     ):
-        self.db_path    = Path(db_path)
-        self.index_path = Path(index_path)
+        settings        = get_settings()
+        self.db_path    = Path(db_path or settings.db_path)
+        self.index_path = Path(index_path or settings.index_path)
         self._matrix: np.ndarray | None = None   # (n, dim) float32, unit-normalized
         self._vecdb:  VecDB | None = None
         self._index_valid = False  # True only when VecDB is in sync with _matrix

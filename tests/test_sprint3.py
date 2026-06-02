@@ -182,12 +182,14 @@ def service(tmp_path, monkeypatch):
     fake = FakeAnthropic(responder=responder)
 
     svc = MemoryService(auto_load=False, llm_client=LLMClient(client=fake))
-    # Point storage at tmp_path so we don't touch real data
+    # Point BOTH stores at tmp_path so we don't touch real data
+    from core.storage.metadata_store import MetadataStore
     svc.vector_store = VecDBStore(
         db_path=str(tmp_path / "vecs.npy"),
         index_path=str(tmp_path / "idx"),
     )
-    # Rebuild retriever against the swapped store
+    svc.metadata_store = MetadataStore(path=str(tmp_path / "meta.json"))
+    # Rebuild retriever against the swapped stores
     from core.indexing.retrieval import SemanticRetriever
     svc.retriever = SemanticRetriever(
         encoder=svc.encoder,

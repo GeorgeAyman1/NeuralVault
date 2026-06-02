@@ -1,8 +1,10 @@
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.routes.memory import router as memory_router
 from api.routes.health import router as health_router
@@ -73,4 +75,11 @@ def root():
         "status": "running",
         "llm_available": settings.llm_available,
         "docs": "/docs",
+        "ui": "/ui",
     }
+
+
+# Serve the demo UI at /ui (mounted last so it never shadows API routes).
+_frontend_dir = Path(__file__).parent / "frontend"
+if _frontend_dir.is_dir():
+    app.mount("/ui", StaticFiles(directory=str(_frontend_dir), html=True), name="ui")

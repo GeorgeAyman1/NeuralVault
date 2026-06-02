@@ -99,6 +99,23 @@ class MemoryService:
     def count(self) -> int:
         return self.metadata_store.count()
 
+    def list_memories(self, offset: int = 0, limit: int = 50) -> dict:
+        """Return non-deleted memories (with their store index) for browsing."""
+        items = []
+        for index, record in enumerate(self.metadata_store.records):
+            if record.get("deleted", False):
+                continue
+            items.append({
+                "index":      index,
+                "id":         record.get("id"),
+                "text":       record.get("text"),
+                "metadata":   record.get("metadata", {}),
+                "created_at": record.get("created_at"),
+            })
+        total = len(items)
+        page  = items[offset: offset + limit]
+        return {"total": total, "offset": offset, "limit": limit, "items": page}
+
     # ------------------------------------------------------------------ #
     # Index                                                                #
     # ------------------------------------------------------------------ #

@@ -30,6 +30,7 @@ class Settings:
     # Storage
     db_path: str = "data/embeddings/vectors.npy"
     index_path: str = "data/indexes/memory_ivf"
+    metadata_path: str = "data/processed/metadata.json"
 
     # Service
     log_level: str = "INFO"
@@ -44,6 +45,7 @@ class Settings:
             max_context_chars = _env_int("NEURALVAULT_MAX_CONTEXT_CHARS", 8000),
             db_path           = os.environ.get("NEURALVAULT_DB_PATH", "data/embeddings/vectors.npy"),
             index_path        = os.environ.get("NEURALVAULT_INDEX_PATH", "data/indexes/memory_ivf"),
+            metadata_path     = os.environ.get("NEURALVAULT_METADATA_PATH", "data/processed/metadata.json"),
             log_level         = os.environ.get("NEURALVAULT_LOG_LEVEL", "INFO"),
         )
 

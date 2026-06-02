@@ -57,6 +57,11 @@ def count_memories():
     return {"count": memory_service.count()}
 
 
+@router.get("/list")
+def list_memories(offset: int = 0, limit: int = 50):
+    return memory_service.list_memories(offset=offset, limit=limit)
+
+
 @router.post("/save")
 def save_memory():
     memory_service.save()

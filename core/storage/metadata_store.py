@@ -4,17 +4,21 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from core.utils.config import get_settings
+
 
 class MetadataStore:
     """
-    Metadata storage for Phase 1.
+    Metadata storage.
 
     Stores memory text, user metadata, UUIDs, and timestamps.
-    Supports save/load using JSON.
+    Supports save/load using JSON. The path defaults to the configured
+    metadata_path so deployments (and tests) can isolate storage.
     """
 
-    def __init__(self):
+    def __init__(self, path: str | None = None):
         self.records: list[dict[str, Any]] = []
+        self.path = Path(path) if path else Path(get_settings().metadata_path)
 
     def add(self, text: str, metadata: dict[str, Any] | None = None) -> int:
         if not text or not text.strip():
@@ -33,15 +37,15 @@ class MetadataStore:
     def get(self, index: int) -> dict[str, Any]:
         return self.records[index]
 
-    def save(self, path: str = "data/processed/metadata.json") -> None:
-        save_path = Path(path)
+    def save(self, path: str | None = None) -> None:
+        save_path = Path(path) if path else self.path
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(save_path, "w", encoding="utf-8") as file:
             json.dump(self.records, file, indent=2, ensure_ascii=False)
 
-    def load(self, path: str = "data/processed/metadata.json") -> None:
-        load_path = Path(path)
+    def load(self, path: str | None = None) -> None:
+        load_path = Path(path) if path else self.path
 
         if not load_path.exists():
             self.records = []
