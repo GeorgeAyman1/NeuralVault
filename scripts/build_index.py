@@ -119,11 +119,12 @@ def build_index(
     print(f"  Assignment done in {time.perf_counter() - t0:.1f}s")
 
     # --- Build CSR arrays ---
+    # int32 for IDs: max 2^31-1 > 20M, halves RAM vs int64
     counts = np.array([len(p) for p in partition_lists], dtype=np.int64)
     offsets = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
 
-    non_empty = [np.array(p, dtype=np.int64) for p in partition_lists if p]
-    ids = np.concatenate(non_empty) if non_empty else np.array([], dtype=np.int64)
+    non_empty = [np.array(p, dtype=np.int32) for p in partition_lists if p]
+    ids = np.concatenate(non_empty) if non_empty else np.array([], dtype=np.int32)
 
     # --- Save ---
     index_dir.mkdir(parents=True, exist_ok=True)

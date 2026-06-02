@@ -65,9 +65,9 @@ class VecDB:
             return None
 
         return {
-            "centroids": np.load(centroids_path),   # (n_clusters, dim) float32
-            "offsets": np.load(offsets_path),        # (n_clusters+1,) int64
-            "ids": np.load(ids_path),                # (total_assigned,) int64
+            "centroids": np.load(centroids_path),              # (n_clusters, dim) float32
+            "offsets": np.load(offsets_path),                  # (n_clusters+1,) int64
+            "ids": np.load(ids_path).astype(np.int32, copy=False),  # (total_assigned,) int32
         }
 
     def retrieve(self, query_vector, top_k: int) -> list[int]:
@@ -115,7 +115,7 @@ class VecDB:
         candidates = np.concatenate(non_empty)
 
         # Sort candidate IDs before mmap access — turns random I/O into sequential reads
-        sorted_candidates = candidates[np.argsort(candidates)]
+        sorted_candidates = np.sort(candidates)
 
         candidate_vecs = self.vectors[sorted_candidates].astype(np.float32)
         # Normalize candidates for cosine similarity
