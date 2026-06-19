@@ -117,9 +117,22 @@ The embedding model is cached in a named volume, so restarts are fast.
 
 ## Configuration
 
-All settings are environment variables (see `.env.example`). The only one
-required for LLM chat is `ANTHROPIC_API_KEY`; without it the service still
-runs (ingestion, search, memory management) and `/memory/chat` returns 503.
+All settings are environment variables (see `.env.example`). LLM chat needs an
+API key for the selected provider; without one the service still runs
+(ingestion, search, memory management) and `/memory/chat` returns 503.
+
+NeuralVault supports two LLM providers via `NEURALVAULT_LLM_PROVIDER`:
+
+- `anthropic` (default) — Claude Opus 4.8, set `ANTHROPIC_API_KEY`.
+- `groq` — free OpenAI-compatible models (e.g. `llama-3.3-70b-versatile`),
+  set `GROQ_API_KEY` (free at https://console.groq.com). The model and base
+  URL default sensibly per provider.
+
+A live end-to-end check against the free Groq tier:
+
+```bash
+GROQ_API_KEY=gsk-... python scripts/live_chat_test_groq.py
+```
 
 ## Key endpoints
 
@@ -136,7 +149,7 @@ runs (ingestion, search, memory management) and `/memory/chat` returns 503.
 ## Tests
 
 ```bash
-pytest                                         # 100 tests, fully offline (LLM mocked)
+pytest                                         # 103 tests, fully offline (LLM mocked)
 ruff check core api main.py vec_db.py tests    # lint
 ```
 

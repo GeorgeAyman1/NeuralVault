@@ -19,9 +19,12 @@ class Settings:
     """
 
     # LLM
+    llm_provider: str = "anthropic"           # "anthropic" | "groq" (OpenAI-compatible)
     anthropic_api_key: str | None = field(default=None)
+    groq_api_key: str | None = field(default=None)
     llm_model: str = "claude-opus-4-8"
     llm_max_tokens: int = 4096
+    llm_base_url: str | None = None           # OpenAI-compatible base URL (groq, etc.)
 
     # Retrieval
     default_top_k: int = 5
@@ -35,11 +38,30 @@ class Settings:
     # Service
     log_level: str = "INFO"
 
+    # Per-provider defaults applied when the corresponding env var is unset.
+    _PROVIDER_DEFAULT_MODEL = {
+        "anthropic": "claude-opus-4-8",
+        "groq":      "llama-3.3-70b-versatile",
+    }
+    _PROVIDER_DEFAULT_BASE_URL = {
+        "groq": "https://api.groq.com/openai/v1",
+    }
+
     @classmethod
     def from_env(cls) -> "Settings":
+        provider = os.environ.get("NEURALVAULT_LLM_PROVIDER", "anthropic").lower()
         return cls(
+            llm_provider      = provider,
             anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY"),
-            llm_model         = os.environ.get("NEURALVAULT_LLM_MODEL", "claude-opus-4-8"),
+            groq_api_key      = os.environ.get("GROQ_API_KEY"),
+            llm_model         = os.environ.get(
+                "NEURALVAULT_LLM_MODEL",
+                cls._PROVIDER_DEFAULT_MODEL.get(provider, "claude-opus-4-8"),
+            ),
+            llm_base_url      = os.environ.get(
+                "NEURALVAULT_LLM_BASE_URL",
+                cls._PROVIDER_DEFAULT_BASE_URL.get(provider),
+            ),
             llm_max_tokens    = _env_int("NEURALVAULT_LLM_MAX_TOKENS", 4096),
             default_top_k     = _env_int("NEURALVAULT_DEFAULT_TOP_K", 5),
             max_context_chars = _env_int("NEURALVAULT_MAX_CONTEXT_CHARS", 8000),
@@ -50,8 +72,15 @@ class Settings:
         )
 
     @property
+    def active_api_key(self) -> str | None:
+        """API key for the currently selected provider."""
+        if self.llm_provider == "groq":
+            return self.groq_api_key
+        return self.anthropic_api_key
+
+    @property
     def llm_available(self) -> bool:
-        return bool(self.anthropic_api_key)
+        return bool(self.active_api_key)
 
 
 _settings: Settings | None = None

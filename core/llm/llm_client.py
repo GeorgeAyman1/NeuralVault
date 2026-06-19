@@ -9,16 +9,21 @@ class LLMUnavailableError(RuntimeError):
 
 class LLMClient:
     """
-    Thin wrapper over the Anthropic Messages API for grounded answering.
+    Wrapper over a chat LLM for grounded answering, supporting two providers:
 
-    Defaults to Claude Opus 4.8 with adaptive thinking and streaming
-    (so large answers don't hit the SDK's non-streaming timeout guard).
-    The system prompt is passed as content blocks so the frozen-instruction
-    prefix is cached across requests.
+      * "anthropic" (default) — Anthropic Messages API, Claude Opus 4.8 with
+        adaptive thinking and streaming, system passed as cacheable content
+        blocks so the frozen-instruction prefix is cached across requests.
+      * "groq" — any OpenAI-compatible Chat Completions endpoint (Groq's free
+        tier by default). The content-block system prompt is flattened into a
+        single system message; prompt caching does not apply.
 
-    The underlying Anthropic client is injectable (`client=`) so tests run
-    fully offline without the SDK or an API key. The real client is imported
-    lazily only when no client is injected.
+    The provider is selected via `provider=` or NEURALVAULT_LLM_PROVIDER.
+
+    The underlying client is injectable (`client=`) so tests run fully offline
+    without any SDK or API key. For "anthropic" the injected object mimics the
+    SDK (`client.messages.stream(...)`); for "groq" it is a callable taking the
+    request payload dict and returning the parsed JSON response dict.
     """
 
     def __init__(
@@ -27,12 +32,29 @@ class LLMClient:
         client: Any | None = None,
         api_key: str | None = None,
         max_tokens: int | None = None,
+        provider: str | None = None,
+        base_url: str | None = None,
     ):
         settings        = get_settings()
+        self.provider   = (provider or settings.llm_provider).lower()
         self.model      = model or settings.llm_model
         self.max_tokens = max_tokens or settings.llm_max_tokens
+        self.base_url   = base_url or settings.llm_base_url
         self._client    = client
-        self._api_key   = api_key or settings.anthropic_api_key
+        if self.provider == "groq":
+            self._api_key = api_key or settings.groq_api_key
+        else:
+            self._api_key = api_key or settings.anthropic_api_key
+
+    def complete(self, system_blocks: list[dict], messages: list[dict]) -> dict:
+        """Dispatch to the configured provider; returns {"text", "usage"}."""
+        if self.provider == "groq":
+            return self._complete_openai_compatible(system_blocks, messages)
+        return self._complete_anthropic(system_blocks, messages)
+
+    # ------------------------------------------------------------------ #
+    # Anthropic                                                           #
+    # ------------------------------------------------------------------ #
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -50,7 +72,7 @@ class LLMClient:
             self._client = anthropic.Anthropic(api_key=self._api_key)
         return self._client
 
-    def complete(
+    def _complete_anthropic(
         self,
         system_blocks: list[dict],
         messages: list[dict],
@@ -87,3 +109,82 @@ class LLMClient:
             }
 
         return {"text": text, "usage": usage_dict}
+
+    # ------------------------------------------------------------------ #
+    # OpenAI-compatible (Groq)                                            #
+    # ------------------------------------------------------------------ #
+
+    def _complete_openai_compatible(
+        self,
+        system_blocks: list[dict],
+        messages: list[dict],
+    ) -> dict:
+        """
+        Call an OpenAI-compatible Chat Completions endpoint.
+
+        The Anthropic-style content-block system prompt is flattened into a
+        single system message (cache_control hints are dropped — caching is an
+        Anthropic feature). Conversation messages already use the shared
+        {"role", "content"} shape, so they pass through unchanged.
+        """
+        system_text = "\n\n".join(
+            b["text"] for b in system_blocks if b.get("type") == "text"
+        )
+        oai_messages = [{"role": "system", "content": system_text}]
+        oai_messages += [
+            {"role": m["role"], "content": m["content"]} for m in messages
+        ]
+
+        payload = {
+            "model":      self.model,
+            "max_tokens": self.max_tokens,
+            "messages":   oai_messages,
+        }
+        data = self._post_chat(payload)
+
+        choices = data.get("choices") or []
+        text = choices[0]["message"]["content"] if choices else ""
+
+        usage = data.get("usage") or {}
+        usage_dict = {
+            "input_tokens":                usage.get("prompt_tokens"),
+            "output_tokens":               usage.get("completion_tokens"),
+            "cache_read_input_tokens":     None,
+            "cache_creation_input_tokens": None,
+        }
+        return {"text": text, "usage": usage_dict}
+
+    def _post_chat(self, payload: dict) -> dict:
+        """POST to /chat/completions; returns the parsed JSON response.
+
+        An injected `client` (tests) is treated as a callable taking the
+        payload and returning the response dict, keeping this path offline.
+        """
+        if self._client is not None:
+            return self._client(payload)
+
+        if not self._api_key:
+            raise LLMUnavailableError(
+                "No GROQ_API_KEY configured — chat is unavailable. "
+                "Set the environment variable to enable LLM features."
+            )
+        try:
+            import httpx  # lazy: module imports fine without httpx present
+        except ImportError as e:
+            raise LLMUnavailableError(
+                "The 'httpx' package is required for the Groq provider — "
+                "run: pip install httpx"
+            ) from e
+
+        base = (self.base_url or "https://api.groq.com/openai/v1").rstrip("/")
+        resp = httpx.post(
+            f"{base}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type":  "application/json",
+            },
+            json=payload,
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
