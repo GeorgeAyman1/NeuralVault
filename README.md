@@ -136,7 +136,7 @@ runs (ingestion, search, memory management) and `/memory/chat` returns 503.
 ## Tests
 
 ```bash
-pytest                                         # 95 tests, fully offline (LLM mocked)
+pytest                                         # 100 tests, fully offline (LLM mocked)
 ruff check core api main.py vec_db.py tests    # lint
 ```
 
