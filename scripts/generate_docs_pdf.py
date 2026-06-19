@@ -170,7 +170,12 @@ P("The system was built in five phases on top of a hand-optimized vector databas
   "IVF (inverted-file) index. On top of that sit memory-management intelligence, "
   "multi-format ingestion, an LLM answering layer with prompt caching, production "
   "monitoring, a CI pipeline, a Docker deployment, and a demo web UI.")
-P("The codebase ships with <b>100 automated tests</b> (all passing, fully offline) "
+P("The LLM answering layer is <b>provider-pluggable</b>: it runs on Anthropic's "
+  "Claude (default) or on any OpenAI-compatible endpoint, including <b>Groq's free "
+  "tier</b> (Llama 3.3 70B) — selected with a single environment variable. The full "
+  "retrieve → ground → answer pipeline was validated live against the free Groq "
+  "endpoint, end to end.")
+P("The codebase ships with <b>103 automated tests</b> (all passing, fully offline) "
   "and a GitHub Actions pipeline that runs lint and tests on every push.")
 
 H2("Headline numbers")
@@ -180,8 +185,9 @@ table([
     ["Per-query RAM @ 20M", "~0 MB (was 2,333 MB before tuning)"],
     ["Retrieval accuracy (score)", "0.0 — perfect (every result in the true top set)"],
     ["Embedding dimension", "384 (memory app) / 64 (benchmark DB)"],
-    ["Automated tests", "100, passing, offline"],
-    ["Build phases", "Sprint 0–4 + CI/CD + frontend"],
+    ["LLM providers", "Anthropic (Claude) or OpenAI-compatible (free Groq)"],
+    ["Automated tests", "103, passing, offline"],
+    ["Build phases", "Sprint 0–4 + CI/CD + frontend + multi-provider LLM"],
 ], [6.5 * cm, 9.5 * cm])
 
 # ---- 2. What it is ----
@@ -198,7 +204,7 @@ bullets([
     "<b>Retrieves</b> the top-k most semantically similar memories for any query.",
     "<b>Manages</b> memory over time: merge duplicates, prune stale entries, summarize clusters.",
     "<b>Ingests</b> knowledge from notebooks, PDFs, DOCX files, and whole code directories.",
-    "<b>Answers</b> questions by grounding an LLM (Claude Opus 4.8) in the retrieved memories.",
+    "<b>Answers</b> questions by grounding a pluggable LLM (Claude, or a free Groq model) in the retrieved memories.",
     "<b>Serves</b> all of this through a FastAPI REST API, a demo web UI, and a Docker container.",
 ])
 
@@ -208,16 +214,27 @@ P("A common point of confusion: NeuralVault uses <b>two completely different mod
   "for two different jobs. Understanding this split is the key to understanding the system.")
 table([
     ["", "Embedding model", "Generation model"],
-    ["Name", "all-MiniLM-L6-v2", "claude-opus-4-8"],
+    ["Name", "all-MiniLM-L6-v2", "Claude (default) or a free Groq model"],
     ["Where", "core/embeddings/encoder.py", "core/llm/llm_client.py"],
     ["Job", "Turn text into 384-dim vectors", "Reason over memories, write the answer"],
-    ["Runs", "Locally (CPU), free", "Anthropic API, paid"],
-    ["Needs key?", "No", "Yes (ANTHROPIC_API_KEY)"],
-], [2.6 * cm, 6.7 * cm, 6.7 * cm])
+    ["Runs", "Locally (CPU), free", "Anthropic API, or any OpenAI-compatible API"],
+    ["Needs key?", "No", "Yes — for the active provider"],
+], [2.6 * cm, 6.4 * cm, 7.0 * cm])
 P("The embedding model decides <i>which</i> memories are relevant; the generation "
   "model decides <i>what to say</i> about them. This is why <b>/memory/search</b> works "
   "with no API key (embeddings only) while <b>/memory/chat</b> returns HTTP 503 without "
-  "one (it needs Claude). Either model can be swapped without touching the other.")
+  "one (it needs a generation model). Either model can be swapped without touching the other.")
+P("The generation model is <b>provider-pluggable</b>, selected by "
+  "<font face='Courier'>NEURALVAULT_LLM_PROVIDER</font>:")
+table([
+    ["Provider", "Model (default)", "Key", "Cost"],
+    ["anthropic", "claude-opus-4-8", "ANTHROPIC_API_KEY", "Paid"],
+    ["groq", "llama-3.3-70b-versatile", "GROQ_API_KEY", "Free tier"],
+], [3.2 * cm, 6.0 * cm, 4.3 * cm, 2.5 * cm])
+P("Both providers go through the same <b>LLMClient</b> and produce the same grounded, "
+  "cited answers — the Anthropic path uses cacheable content-block system prompts and "
+  "streaming; the Groq path targets any OpenAI-compatible Chat Completions endpoint. "
+  "Adding a third provider (e.g. xAI Grok, also OpenAI-compatible) is a base-URL change.")
 
 # ---- 4. System architecture ----
 H1("4. System Architecture")
@@ -277,14 +294,15 @@ code(
     llm/
       context_builder.py     # cached-prefix system prompt
       conversation.py        # multi-turn history
-      llm_client.py          # Anthropic SDK wrapper
+      llm_client.py          # provider-pluggable: Anthropic + OpenAI-compatible (Groq)
     utils/
       config.py, metrics.py, logging.py
   api/routes/                # memory.py, health.py
   api/schemas/               # pydantic request models
-  scripts/                   # build_index.py, inspect_db.py, ...
+  scripts/                   # build_index.py, inspect_db.py,
+                             #   live_chat_test_groq.py, ...
   frontend/index.html        # demo UI
-  tests/                     # 100 tests + conftest.py
+  tests/                     # 103 tests + conftest.py
   Dockerfile, docker-compose.yml, .github/workflows/test.yml
 """)
 
@@ -433,10 +451,24 @@ H2("ConversationMemory (core/llm/conversation.py)")
 P("Holds multi-turn history as Messages-API dicts, trimmed to a max number of turns "
   "while always preserving a leading user message, so follow-up questions retain context.")
 H2("LLMClient (core/llm/llm_client.py)")
-P("Wraps the Anthropic SDK: Claude Opus 4.8, adaptive thinking, streaming assembled via "
-  "get_final_message(). The anthropic import is lazy and the client is injectable, so "
-  "the whole stack imports and tests fully offline. If no API key is configured it "
-  "raises a clear LLMUnavailableError instead of crashing.")
+P("A provider-pluggable client that dispatches on <font face='Courier'>self.provider</font>. "
+  "The <b>anthropic</b> path wraps the Anthropic SDK (Claude Opus 4.8, adaptive thinking, "
+  "streaming assembled via get_final_message()). The <b>groq</b> path calls any "
+  "OpenAI-compatible Chat Completions endpoint over httpx, flattening the content-block "
+  "system prompt into a single system message (caching is Anthropic-only). Both return "
+  "the identical {text, usage} shape, so nothing upstream changes when you switch. The "
+  "SDK/HTTP client is injectable and imports are lazy, so the whole stack tests fully "
+  "offline; if no key is configured for the active provider it raises a clear "
+  "LLMUnavailableError instead of crashing.")
+H2("Multi-provider support (Anthropic & Groq)")
+P("Provider, model, base URL, and keys are all configuration "
+  "(NEURALVAULT_LLM_PROVIDER, GROQ_API_KEY, NEURALVAULT_LLM_BASE_URL, ...), with "
+  "provider-aware defaults — set provider to <b>groq</b> and the model/base-URL default "
+  "to Llama 3.3 70B on Groq's free endpoint automatically. This made it possible to run "
+  "the entire engine against a <b>free</b> LLM. A live end-to-end run "
+  "(scripts/live_chat_test_groq.py) confirmed grounded, cited answers, multi-turn "
+  "conversation memory, and correct refusal when the answer is not in memory — all on "
+  "Groq's free tier, including graceful back-off on the tier's HTTP 429 rate limit.")
 H2("chat()")
 P("The MemoryService.chat() method ties it together: retrieve top-k memories -> build "
   "the cached system prompt -> call the LLM -> record the turn in conversation memory -> "
@@ -491,8 +523,8 @@ code(
 6. ContextBuilder builds a 2-block system prompt:
    [frozen instructions | cache_control]  +  [retrieved memories].
 7. ConversationMemory appends the user turn (prior history included).
-8. LLMClient streams Claude Opus 4.8 with adaptive thinking;
-   get_final_message() assembles the answer.
+8. LLMClient calls the configured provider (Claude Opus 4.8, or a free
+   Groq model) and assembles the answer.
 9. The assistant turn is recorded; response returns:
    { answer, memories_used:[{index,id,text,score}], usage }
 10. Middleware records latency into Metrics; /metrics now reflects the call.
@@ -525,12 +557,15 @@ table([
 
 # ---- 16. Config reference ----
 H1("16. Configuration Reference")
-P("All settings are environment variables (see .env.example). Only ANTHROPIC_API_KEY is "
-  "required, and only for chat.")
+P("All settings are environment variables (see .env.example). Chat needs a key for the "
+  "active provider; everything else has a sensible default.")
 table([
     ["Variable", "Default", "Purpose"],
-    ["ANTHROPIC_API_KEY", "(none)", "Enables /memory/chat"],
-    ["NEURALVAULT_LLM_MODEL", "claude-opus-4-8", "Generation model"],
+    ["NEURALVAULT_LLM_PROVIDER", "anthropic", "anthropic | groq"],
+    ["ANTHROPIC_API_KEY", "(none)", "Enables chat (provider=anthropic)"],
+    ["GROQ_API_KEY", "(none)", "Enables chat (provider=groq, free)"],
+    ["NEURALVAULT_LLM_MODEL", "(per provider)", "opus-4-8 / llama-3.3-70b"],
+    ["NEURALVAULT_LLM_BASE_URL", "(per provider)", "OpenAI-compatible endpoint"],
     ["NEURALVAULT_LLM_MAX_TOKENS", "4096", "Max answer length"],
     ["NEURALVAULT_DEFAULT_TOP_K", "5", "Default retrieval depth"],
     ["NEURALVAULT_MAX_CONTEXT_CHARS", "8000", "Context budget"],
@@ -542,17 +577,17 @@ table([
 # ---- 17. Testing ----
 br()
 H1("17. Testing")
-P("The suite has <b>100 tests</b>, all passing and fully offline — the LLM is mocked "
-  "end-to-end with a fake Anthropic client, so no API key or network is needed. Tests "
-  "cover the vector store, retrieval, every sprint's features, the API endpoints, and "
-  "the frontend-supporting routes.")
+P("The suite has <b>103 tests</b>, all passing and fully offline — the LLM is mocked "
+  "end-to-end (a fake Anthropic client and an injected Groq responder), so no API key or "
+  "network is needed. Tests cover the vector store, retrieval, every sprint's features, "
+  "both LLM provider paths, the API endpoints, and the frontend-supporting routes.")
 P("<b>Test isolation</b> is enforced by tests/conftest.py, which points all storage "
   "paths at a throwaway temp directory at import time — before any test or the app "
   "singleton loads — so no test can ever touch the real data directory. This was added "
   "after a fixture leak corrupted the local store and broke app startup; it is now "
   "structurally impossible.")
 code(
-"""pytest                                       # 100 tests, offline
+"""pytest                                       # 103 tests, offline
 ruff check core api main.py vec_db.py tests  # lint
 """)
 
@@ -566,8 +601,18 @@ uvicorn main:app --reload          # http://localhost:8000
 """)
 H2("Docker")
 code(
-"""cp .env.example .env               # add ANTHROPIC_API_KEY (optional)
+"""cp .env.example .env               # add a provider key (optional)
 docker compose up -d               # persists ./data and ./logs
+""")
+H2("Run on a free LLM (Groq)")
+code(
+"""# PowerShell
+$env:NEURALVAULT_LLM_PROVIDER="groq"
+$env:GROQ_API_KEY="gsk-..."        # free at console.groq.com
+uvicorn main:app --reload          # /memory/chat now answers via Groq
+
+# one-shot live check:
+python scripts/live_chat_test_groq.py
 """)
 
 # ---- 19. Lessons ----
@@ -589,6 +634,10 @@ bullets([
     "<b>Secrets never reach the repo.</b> GitHub push protection blocked a commit that "
     "swept in a notebook containing a personal access token; the notebook was untracked "
     "and history confirmed clean.",
+    "<b>A thin provider seam buys optionality.</b> Because generation sits behind one "
+    "LLMClient with a stable {text, usage} contract, adding an OpenAI-compatible path let "
+    "the whole engine run on a free LLM (Groq) with no changes upstream — and the default "
+    "Anthropic path was never touched.",
 ])
 
 # ---- 20. Glossary ----
@@ -603,6 +652,9 @@ table([
     ["Soft-delete", "Mark a record deleted without removing it until compaction."],
     ["Prompt caching", "Reusing a cached prompt prefix to cut cost/latency."],
     ["Adaptive thinking", "Claude deciding how much to reason per request."],
+    ["LLM provider", "The backend serving the generation model (Anthropic or Groq)."],
+    ["OpenAI-compatible", "An API matching OpenAI's Chat Completions schema (e.g. Groq)."],
+    ["Groq", "A fast inference provider with a free tier (used here for Llama 3.3 70B)."],
     ["Top-k", "The k most similar results returned for a query."],
 ], [4 * cm, 12 * cm])
 
